@@ -11,7 +11,7 @@ app.use(express.json());
 
 /**
  * Pool de conexión MariaDB
- */
+
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   port: 3306,
@@ -19,6 +19,24 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   connectionLimit: 10,
+});
+codigo original
+ */
+
+app.get("/api/db-test", async (_req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT VERSION() AS version");
+    res.json({
+      status: "connected",
+      mariadb: rows[0].version,
+    });
+  } catch (error) {
+    console.error("DB ERROR:", error);
+    res.status(500).json({
+      error: error.message,
+      code: error.code
+    });
+  }
 });
 
 /**
