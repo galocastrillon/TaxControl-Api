@@ -3,15 +3,15 @@ import mysql from "mysql2/promise";
 import cors from "cors";
 import dotenv from "dotenv";
 
+// 1️⃣ Cargar variables de entorno
 dotenv.config();
 
+// 2️⃣ Crear app
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-/**
- * Pool de conexión MariaDB
-
+// 3️⃣ Crear pool MariaDB (GLOBAL)
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   port: 3306,
@@ -20,9 +20,13 @@ const pool = mysql.createPool({
   database: process.env.DB_NAME,
   connectionLimit: 10,
 });
-codigo original
- */
 
+// 4️⃣ Endpoint de salud
+app.get("/api/health", (_req, res) => {
+  res.json({ status: "ok" });
+});
+
+// 5️⃣ Endpoint de prueba DB
 app.get("/api/db-test", async (_req, res) => {
   try {
     const [rows] = await pool.query("SELECT VERSION() AS version");
@@ -34,48 +38,13 @@ app.get("/api/db-test", async (_req, res) => {
     console.error("DB ERROR:", error);
     res.status(500).json({
       error: error.message,
-      code: error.code
+      code: error.code,
     });
   }
 });
 
-/**
- * Health check (para frontend y Coolify)
- */
-app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok" });
-});
-
-/**
- * Prueba real contra MariaDB
- */
-app.get("/api/db-test", async (_req, res) => {
-  try {
-    const [rows] = await pool.query("SELECT VERSION() AS version");
-    res.json({
-      status: "connected",
-      mariadb: rows[0].version,
-    });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Database connection failed" });
-  }
-});
-
-/**
- * EJEMPLO de endpoint (se adapta a db.sql)
- * ESTE ES EL QUE CAMBIAREMOS CON TU db.sql
- */
-app.get("/api/example", async (_req, res) => {
-  try {
-    const [rows] = await pool.query("SELECT 1 AS example");
-    res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: "Query error" });
-  }
-});
-
+// 6️⃣ Arrancar servidor
 const PORT = 3001;
 app.listen(PORT, () => {
-  console.log(`✅ TaxControl API running on port ${PORT}`);
+  console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
 });
