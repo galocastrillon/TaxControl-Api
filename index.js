@@ -268,6 +268,76 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
   res.json({ user: req.user });
 });
 
+app.get("/api/users", requireAuth, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      "SELECT id, name, email, role, avatar_url FROM users ORDER BY created_at ASC"
+    );
+    res.json(rows.map(u => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      role: u.role,
+      avatar: u.avatar_url
+    })));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 👥 POST crear usuario
+app.post("/api/users", requireAuth, async (req, res) => {
+  const { name, email, role, password } = req.body;
+  if (!name || !email || !password)
+    return res.status(400).json({ error: "Nombre, email y contraseña requeridos" });
+  try {
+    const id = "u" + Date.now();
+    const hash = crypto.createHash("sha256").update(id + password).digest("hex");
+    await pool.query(
+      "INSERT INTO users (id, name, email, password_hash, role) VALUES (?, ?, ?, ?, ?)",
+      [id, name, email, hash, role || "Operator"]
+    );
+    res.status(201).json({ id, name, email, role: role || "Operator" });
+  } catch (error) {
+    if (error.code === "ER_DUP_ENTRY")
+      return res.status(400).json({ error: "El email ya está registrado" });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 👥 PUT actualizar usuario
+app.put("/api/users/:id", requireAuth, async (req, res) => {
+  const { name, email, role, password } = req.body;
+  try {
+    if (password) {
+      const hash = crypto.createHash("sha256").update(req.params.id + password).digest("hex");
+      await pool.query(
+        "UPDATE users SET name=?, email=?, role=?, password_hash=? WHERE id=?",
+        [name, email, role, hash, req.params.id]
+      );
+    } else {
+      await pool.query(
+        "UPDATE users SET name=?, email=?, role=? WHERE id=?",
+        [name, email, role, req.params.id]
+      );
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 👥 DELETE eliminar usuario
+app.delete("/api/users/:id", requireAuth, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM sessions WHERE user_id = ?", [req.params.id]);
+    await pool.query("DELETE FROM users WHERE id = ?", [req.params.id]);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 📄 GET todos los documentos
 app.get("/api/documents", requireAuth, async (req, res) => {
   try {
