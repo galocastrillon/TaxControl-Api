@@ -1,3 +1,4 @@
+/*
 import express from "express";
 import mysql from "mysql2/promise";
 import cors from "cors";
@@ -131,6 +132,283 @@ app.post("/api/auth/logout", async (req, res) => {
 // 9️⃣ Usuario actual
 app.get("/api/auth/me", requireAuth, (req, res) => {
   res.json({ user: req.user });
+});
+
+// 🔟 Arrancar servidor
+const PORT = 3001;
+app.listen(PORT, () => {
+  console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
+});
+*/
+import express from "express";
+import mysql from "mysql2/promise";
+import cors from "cors";
+import dotenv from "dotenv";
+import crypto from "crypto";
+
+// 1️⃣ Cargar variables de entorno
+dotenv.config();
+
+// 2️⃣ Crear app
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// 3️⃣ Crear pool MariaDB (GLOBAL)
+const pool = mysql.createPool({
+  host: process.env.DB_HOST,
+  port: 3306,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  connectionLimit: 10,
+});
+
+// 4️⃣ Endpoint de salud
+app.get("/api/health", (_req, res) => {
+  res.json({ status: "ok" });
+});
+
+// 5️⃣ Endpoint de prueba DB
+app.get("/api/db-test", async (_req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT VERSION() AS version");
+    res.json({
+      status: "connected",
+      mariadb: rows[0].version,
+    });
+  } catch (error) {
+    console.error("DB ERROR:", error);
+    res.status(500).json({
+      error: error.message,
+      code: error.code,
+    });
+  }
+});
+
+// 6️⃣ Middleware verificar sesión
+const requireAuth = async (req, res, next) => {
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith("Bearer "))
+    return res.status(401).json({ error: "No autorizado" });
+  const token = auth.slice(7);
+  try {
+    const [rows] = await pool.query(
+      `SELECT s.*, u.name, u.email, u.avatar_url 
+       FROM sessions s 
+       JOIN users u ON s.user_id = u.id 
+       WHERE s.token = ? AND s.expires_at > NOW()`,
+      [token]
+    );
+    if (rows.length === 0)
+      return res.status(401).json({ error: "Sesión expirada o inválida" });
+    req.user = rows[0];
+    next();
+  } catch (error) {
+    res.status(500).json({ error: "Error verificando sesión" });
+  }
+};
+
+// 7️⃣ Login
+app.post("/api/auth/login", async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password)
+    return res.status(400).json({ error: "Email y contraseña requeridos" });
+  try {
+    const [rows] = await pool.query(
+      "SELECT * FROM users WHERE email = ?",
+      [email]
+    );
+    if (rows.length === 0)
+      return res.status(401).json({ error: "Credenciales incorrectas" });
+    const user = rows[0];
+
+    // SHA256(id + password)
+    const hash = crypto
+      .createHash("sha256")
+      .update(user.id + password)
+      .digest("hex");
+    if (hash !== user.password_hash)
+      return res.status(401).json({ error: "Credenciales incorrectas" });
+
+    // Crear sesión
+    const token = crypto.randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000); // 8 horas
+    await pool.query(
+      "INSERT INTO sessions (token, user_id, role, expires_at) VALUES (?, ?, ?, ?)",
+      [token, user.id, user.role, expiresAt]
+    );
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        avatar_url: user.avatar_url,
+      },
+    });
+  } catch (error) {
+    console.error("Login error:", error);
+    res.status(500).json({ error: "Error interno del servidor" });
+  }
+});
+
+// 8️⃣ Logout
+app.post("/api/auth/logout", async (req, res) => {
+  const auth = req.headers.authorization;
+  if (auth?.startsWith("Bearer ")) {
+    await pool.query("DELETE FROM sessions WHERE token = ?", [auth.slice(7)]);
+  }
+  res.json({ ok: true });
+});
+
+// 9️⃣ Usuario actual
+app.get("/api/auth/me", requireAuth, (req, res) => {
+  res.json({ user: req.user });
+});
+
+// 📄 GET todos los documentos
+app.get("/api/documents", requireAuth, async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT d.*, 
+        c.name as company_name,
+        u.name as created_by_name
+      FROM documents d
+      LEFT JOIN companies c ON d.company_id = c.id
+      LEFT JOIN users u ON d.created_by = u.id
+      ORDER BY d.created_at DESC
+    `);
+
+    const docs = rows.map(d => ({
+      id: d.id,
+      title: d.title,
+      trarniteNumber: d.trarnite_number,
+      company: d.company_name || d.company_id,
+      authority: d.authority,
+      department: d.department,
+      notificationDate: d.notification_date?.toISOString().split('T')[0],
+      daysLimit: d.days_limit,
+      dayType: d.day_type,
+      dueDate: d.due_date?.toISOString().split('T')[0],
+      status: d.status,
+      summaryEs: d.summary_es,
+      summaryCn: d.summary_cn,
+      fileName: d.file_name,
+      createdBy: d.created_by_name || d.created_by,
+      createdAt: d.created_at?.toISOString().split('T')[0],
+      contestations: []
+    }));
+
+    res.json(docs);
+  } catch (error) {
+    console.error("GET /api/documents error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 📄 GET un documento por ID
+app.get("/api/documents/:id", requireAuth, async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT d.*, c.name as company_name, u.name as created_by_name
+      FROM documents d
+      LEFT JOIN companies c ON d.company_id = c.id
+      LEFT JOIN users u ON d.created_by = u.id
+      WHERE d.id = ?
+    `, [req.params.id]);
+
+    if (rows.length === 0)
+      return res.status(404).json({ error: "Documento no encontrado" });
+
+    const d = rows[0];
+    const [contestations] = await pool.query(
+      "SELECT * FROM contestations WHERE document_id = ?",
+      [req.params.id]
+    );
+
+    res.json({
+      id: d.id,
+      title: d.title,
+      trarniteNumber: d.trarnite_number,
+      company: d.company_name || d.company_id,
+      authority: d.authority,
+      department: d.department,
+      notificationDate: d.notification_date?.toISOString().split('T')[0],
+      daysLimit: d.days_limit,
+      dayType: d.day_type,
+      dueDate: d.due_date?.toISOString().split('T')[0],
+      status: d.status,
+      summaryEs: d.summary_es,
+      summaryCn: d.summary_cn,
+      fileName: d.file_name,
+      createdBy: d.created_by_name || d.created_by,
+      createdAt: d.created_at?.toISOString().split('T')[0],
+      contestations
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 📄 POST crear documento
+app.post("/api/documents", requireAuth, async (req, res) => {
+  const d = req.body;
+  try {
+    const id = d.id || `d${Date.now()}`;
+    await pool.query(`
+      INSERT INTO documents 
+        (id, title, trarnite_number, company_id, authority, department, 
+         notification_date, days_limit, day_type, due_date, status, 
+         summary_es, summary_cn, file_name, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      id, d.title, d.trarniteNumber, d.company, d.authority, d.department,
+      d.notificationDate, d.daysLimit, d.dayType, d.dueDate,
+      d.status || "Inicializado", d.summaryEs, d.summaryCn,
+      d.fileName, req.user.user_id
+    ]);
+    res.status(201).json({ id, ...d });
+  } catch (error) {
+    console.error("POST /api/documents error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 📄 PUT actualizar documento
+app.put("/api/documents/:id", requireAuth, async (req, res) => {
+  const d = req.body;
+  try {
+    await pool.query(`
+      UPDATE documents SET
+        title = ?, trarnite_number = ?, company_id = ?, authority = ?,
+        department = ?, notification_date = ?, days_limit = ?, day_type = ?,
+        due_date = ?, status = ?, summary_es = ?, summary_cn = ?,
+        file_name = ?, last_edited_by = ?, last_edited_at = NOW()
+      WHERE id = ?
+    `, [
+      d.title, d.trarniteNumber, d.company, d.authority,
+      d.department, d.notificationDate, d.daysLimit, d.dayType,
+      d.dueDate, d.status, d.summaryEs, d.summaryCn,
+      d.fileName, req.user.user_id, req.params.id
+    ]);
+    res.json({ ok: true });
+  } catch (error) {
+    console.error("PUT /api/documents error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 📄 DELETE eliminar documento
+app.delete("/api/documents/:id", requireAuth, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM documents WHERE id = ?", [req.params.id]);
+    res.json({ ok: true });
+  } catch (error) {
+    console.error("DELETE /api/documents error:", error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // 🔟 Arrancar servidor
