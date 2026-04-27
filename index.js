@@ -551,25 +551,18 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
                 }
               },
               {
-                text: `Analiza este documento tributario/legal ecuatoriano y extrae la información en formato JSON exacto sin markdown:
-{
-  "authority": "entidad que emite el documento (ej: SRI, SENAE)",
-  "department": "departamento o dirección específica",
-  "company": "empresa destinataria (ej: ECSA, EXSA)",
-  "notificationDate": "fecha de notificación en formato YYYY-MM-DD",
-  "emissionDate": "fecha de emisión en formato YYYY-MM-DD",
-  "daysLimit": número de días para responder (integer),
-  "dayType": "Días hábiles o Días calendario",
-  "trarniteNumber": "número de trámite o expediente",
-  "title": "título descriptivo del documento en español",
-  "summaryEs": "resumen detallado en español de 3-5 párrafos explicando el contenido, requerimientos y plazos",
-  "summaryCn": "resumen detallado en chino mandarín de 3-5 párrafos",
-  "activities": ["lista de actividades o acciones requeridas"]
-}`
+                text: `Analiza este documento tributario/legal ecuatoriano y extrae la información. 
+Responde ÚNICAMENTE con un objeto JSON válido, sin markdown, sin bloques de código, sin texto adicional antes o después.
+El JSON debe tener exactamente esta estructura:
+{"authority":"entidad que emite el documento","department":"departamento específico","company":"empresa destinataria","notificationDate":"YYYY-MM-DD","emissionDate":"YYYY-MM-DD","daysLimit":10,"dayType":"Días hábiles","trarniteNumber":"número de trámite","title":"título del documento","summaryEs":"resumen en español de 3 párrafos","summaryCn":"resumen en chino mandarín de 3 párrafos","activities":["actividad 1","actividad 2"]}`
               }
             ]
           }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
+          generationConfig: { 
+            temperature: 0.1, 
+            maxOutputTokens: 2048,
+            responseMimeType: "application/json"
+          }
         })
       }
     );
@@ -581,8 +574,19 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
 
     const geminiData = await geminiRes.json();
     const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-    const clean = text.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean);
+    
+    // Limpiar el texto agresivamente antes de parsear
+    const clean = text
+      .replace(/```json/gi, '')
+      .replace(/```/g, '')
+      .replace(/[\x00-\x1F\x7F]/g, ' ') // eliminar caracteres de control
+      .trim();
+
+    // Extraer solo el objeto JSON si hay texto extra
+    const jsonMatch = clean.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("No se encontró JSON válido en la respuesta");
+    
+    const parsed = JSON.parse(jsonMatch[0]);
     res.json(parsed);
 
   } catch (error) {
