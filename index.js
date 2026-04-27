@@ -574,18 +574,24 @@ El JSON debe tener exactamente esta estructura:
 
     const geminiData = await geminiRes.json();
     const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-    
-    // Limpiar el texto agresivamente antes de parsear
+
+    // Logging temporal para debug
+    console.log("=== GEMINI RAW RESPONSE ===");
+    console.log(JSON.stringify(geminiData, null, 2));
+    console.log("=== TEXT EXTRACTED ===");
+    console.log(text);
+    console.log("=== END ===");
+
+    // Limpiar el texto antes de parsear
     const clean = text
       .replace(/```json/gi, '')
       .replace(/```/g, '')
-      .replace(/[\x00-\x1F\x7F]/g, ' ') // eliminar caracteres de control
+      .replace(/[\x00-\x1F\x7F]/g, ' ')
       .trim();
 
-    // Extraer solo el objeto JSON si hay texto extra
     const jsonMatch = clean.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error("No se encontró JSON válido en la respuesta");
-    
+
     const parsed = JSON.parse(jsonMatch[0]);
     res.json(parsed);
 
