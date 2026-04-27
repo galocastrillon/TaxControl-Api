@@ -481,6 +481,45 @@ app.delete("/api/documents/:id", requireAuth, async (req, res) => {
   }
 });
 
+// 📋 GET actividades por documento
+app.get("/api/activities", requireAuth, async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT a.*, d.title as doc_title 
+      FROM activities a
+      LEFT JOIN documents d ON a.document_id = d.id
+      ORDER BY a.due_date ASC
+    `);
+    res.json(rows.map(a => ({
+      id: a.id,
+      docId: a.document_id,
+      docTitle: a.doc_title,
+      description: a.description,
+      subDescription: a.sub_description,
+      dueDate: a.due_date?.toISOString().split('T')[0],
+      status: a.status,
+      priority: a.priority,
+      completedBy: a.completed_by,
+      completedAt: a.completed_at
+    })));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 📋 PUT marcar actividad como completada
+app.put("/api/activities/:id/complete", requireAuth, async (req, res) => {
+  try {
+    await pool.query(
+      `UPDATE activities SET status='Completed', completed_by=?, completed_at=NOW() WHERE id=?`,
+      [req.user.name, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 🔟 Arrancar servidor
 const PORT = 3001;
 app.listen(PORT, () => {
