@@ -591,6 +591,20 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
   }
 });
 
+// 📧 Notificación nuevo documento (placeholder)
+app.post("/api/notify/new-document", requireAuth, async (req, res) => {
+  try {
+    const [users] = await pool.query(
+      "SELECT email FROM users WHERE role IN ('Admin', 'Operator')"
+    );
+    // TODO: implementar envío SMTP real
+    console.log(`Notificación enviada a ${users.length} usuarios`);
+    res.json({ ok: true, recipients: users.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 🔍 Endpoint temporal para listar modelos disponibles
 app.get("/api/list-models", async (req, res) => {
   const r = await fetch(
@@ -599,6 +613,8 @@ app.get("/api/list-models", async (req, res) => {
   const data = await r.json();
   res.json(data.models?.map(m => m.name) || data);
 });
+
+
 
 // 🔟 Arrancar servidor
 const PORT = 3001;
