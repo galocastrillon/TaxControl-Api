@@ -1,4 +1,3 @@
-/*
 import express from "express";
 import mysql from "mysql2/promise";
 import cors from "cors";
@@ -10,8 +9,6 @@ dotenv.config();
 
 // 2️⃣ Crear app
 const app = express();
-//app.use(cors());
-//app.use(express.json());
 app.use(cors({
   origin: [
     'http://taxcontrolapp.192.168.60.109.sslip.io',
@@ -19,6 +16,8 @@ app.use(cors({
     'http://localhost:3000',
     'http://localhost:5173'
   ],
+  credentials: true
+}));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
@@ -41,157 +40,10 @@ app.get("/api/health", (_req, res) => {
 app.get("/api/db-test", async (_req, res) => {
   try {
     const [rows] = await pool.query("SELECT VERSION() AS version");
-    res.json({
-      status: "connected",
-      mariadb: rows[0].version,
-    });
+    res.json({ status: "connected", mariadb: rows[0].version });
   } catch (error) {
     console.error("DB ERROR:", error);
-    res.status(500).json({
-      error: error.message,
-      code: error.code,
-    });
-  }
-});
-
-// 6️⃣ Middleware verificar sesión
-const requireAuth = async (req, res, next) => {
-  const auth = req.headers.authorization;
-  if (!auth?.startsWith("Bearer "))
-    return res.status(401).json({ error: "No autorizado" });
-
-  const token = auth.slice(7);
-  try {
-    const [rows] = await pool.query(
-      `SELECT s.*, u.name, u.email, u.avatar_url 
-       FROM sessions s 
-       JOIN users u ON s.user_id = u.id 
-       WHERE s.token = ? AND s.expires_at > NOW()`,
-      [token]
-    );
-    if (rows.length === 0)
-      return res.status(401).json({ error: "Sesión expirada o inválida" });
-
-    req.user = rows[0];
-    next();
-  } catch (error) {
-    res.status(500).json({ error: "Error verificando sesión" });
-  }
-};
-
-// 7️⃣ Login
-app.post("/api/auth/login", async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password)
-    return res.status(400).json({ error: "Email y contraseña requeridos" });
-
-  try {
-    const [rows] = await pool.query(
-      "SELECT * FROM users WHERE email = ?",
-      [email]
-    );
-    if (rows.length === 0)
-      return res.status(401).json({ error: "Credenciales incorrectas" });
-
-    const user = rows[0];
-
-    // SHA256(id + password)
-    const hash = crypto
-      .createHash("sha256")
-      .update(user.id + password)
-      .digest("hex");
-
-    if (hash !== user.password_hash)
-      return res.status(401).json({ error: "Credenciales incorrectas" });
-
-    // Crear sesión
-    const token = crypto.randomBytes(32).toString("hex");
-    const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000); // 8 horas
-
-    await pool.query(
-      "INSERT INTO sessions (token, user_id, role, expires_at) VALUES (?, ?, ?, ?)",
-      [token, user.id, user.role, expiresAt]
-    );
-
-    res.json({
-      token,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        avatar_url: user.avatar_url,
-      },
-    });
-  } catch (error) {
-    console.error("Login error:", error);
-    res.status(500).json({ error: "Error interno del servidor" });
-  }
-});
-
-// 8️⃣ Logout
-app.post("/api/auth/logout", async (req, res) => {
-  const auth = req.headers.authorization;
-  if (auth?.startsWith("Bearer ")) {
-    await pool.query("DELETE FROM sessions WHERE token = ?", [auth.slice(7)]);
-  }
-  res.json({ ok: true });
-});
-
-// 9️⃣ Usuario actual
-app.get("/api/auth/me", requireAuth, (req, res) => {
-  res.json({ user: req.user });
-});
-
-// 🔟 Arrancar servidor
-const PORT = 3001;
-app.listen(PORT, () => {
-  console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
-});
-*/
-import express from "express";
-import mysql from "mysql2/promise";
-import cors from "cors";
-import dotenv from "dotenv";
-import crypto from "crypto";
-
-// 1️⃣ Cargar variables de entorno
-dotenv.config();
-
-// 2️⃣ Crear app
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-// 3️⃣ Crear pool MariaDB (GLOBAL)
-const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  port: 3306,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  connectionLimit: 10,
-});
-
-// 4️⃣ Endpoint de salud
-app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok" });
-});
-
-// 5️⃣ Endpoint de prueba DB
-app.get("/api/db-test", async (_req, res) => {
-  try {
-    const [rows] = await pool.query("SELECT VERSION() AS version");
-    res.json({
-      status: "connected",
-      mariadb: rows[0].version,
-    });
-  } catch (error) {
-    console.error("DB ERROR:", error);
-    res.status(500).json({
-      error: error.message,
-      code: error.code,
-    });
+    res.status(500).json({ error: error.message, code: error.code });
   }
 });
 
@@ -224,38 +76,22 @@ app.post("/api/auth/login", async (req, res) => {
   if (!email || !password)
     return res.status(400).json({ error: "Email y contraseña requeridos" });
   try {
-    const [rows] = await pool.query(
-      "SELECT * FROM users WHERE email = ?",
-      [email]
-    );
+    const [rows] = await pool.query("SELECT * FROM users WHERE email = ?", [email]);
     if (rows.length === 0)
       return res.status(401).json({ error: "Credenciales incorrectas" });
     const user = rows[0];
-
-    // SHA256(id + password)
-    const hash = crypto
-      .createHash("sha256")
-      .update(user.id + password)
-      .digest("hex");
+    const hash = crypto.createHash("sha256").update(user.id + password).digest("hex");
     if (hash !== user.password_hash)
       return res.status(401).json({ error: "Credenciales incorrectas" });
-
-    // Crear sesión
     const token = crypto.randomBytes(32).toString("hex");
-    const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000); // 8 horas
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 días
     await pool.query(
       "INSERT INTO sessions (token, user_id, role, expires_at) VALUES (?, ?, ?, ?)",
       [token, user.id, user.role, expiresAt]
     );
     res.json({
       token,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        avatar_url: user.avatar_url,
-      },
+      user: { id: user.id, name: user.name, email: user.email, role: user.role, avatar_url: user.avatar_url },
     });
   } catch (error) {
     console.error("Login error:", error);
@@ -277,18 +113,13 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
   res.json({ user: req.user });
 });
 
+// 👥 GET todos los usuarios
 app.get("/api/users", requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(
       "SELECT id, name, email, role, avatar_url FROM users ORDER BY created_at ASC"
     );
-    res.json(rows.map(u => ({
-      id: u.id,
-      name: u.name,
-      email: u.email,
-      role: u.role,
-      avatar: u.avatar_url
-    })));
+    res.json(rows.map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role, avatar: u.avatar_url })));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -351,15 +182,12 @@ app.delete("/api/users/:id", requireAuth, async (req, res) => {
 app.get("/api/documents", requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(`
-      SELECT d.*, 
-        c.name as company_name,
-        u.name as created_by_name
+      SELECT d.*, c.name as company_name, u.name as created_by_name
       FROM documents d
       LEFT JOIN companies c ON d.company_id = c.id
       LEFT JOIN users u ON d.created_by = u.id
       ORDER BY d.created_at DESC
     `);
-
     const docs = rows.map(d => ({
       id: d.id,
       title: d.title,
@@ -379,7 +207,6 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       createdAt: d.created_at?.toISOString().split('T')[0],
       contestations: []
     }));
-
     res.json(docs);
   } catch (error) {
     console.error("GET /api/documents error:", error);
@@ -397,32 +224,21 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
       LEFT JOIN users u ON d.created_by = u.id
       WHERE d.id = ?
     `, [req.params.id]);
-
     if (rows.length === 0)
       return res.status(404).json({ error: "Documento no encontrado" });
-
     const d = rows[0];
     const [contestations] = await pool.query(
-      "SELECT * FROM contestations WHERE document_id = ?",
-      [req.params.id]
+      "SELECT * FROM contestations WHERE document_id = ?", [req.params.id]
     );
-
     res.json({
-      id: d.id,
-      title: d.title,
-      trarniteNumber: d.trarnite_number,
-      company: d.company_name || d.company_id,
-      authority: d.authority,
+      id: d.id, title: d.title, trarniteNumber: d.trarnite_number,
+      company: d.company_name || d.company_id, authority: d.authority,
       department: d.department,
       notificationDate: d.notification_date?.toISOString().split('T')[0],
-      daysLimit: d.days_limit,
-      dayType: d.day_type,
+      daysLimit: d.days_limit, dayType: d.day_type,
       dueDate: d.due_date?.toISOString().split('T')[0],
-      status: d.status,
-      summaryEs: d.summary_es,
-      summaryCn: d.summary_cn,
-      fileName: d.file_name,
-      createdBy: d.created_by_name || d.created_by,
+      status: d.status, summaryEs: d.summary_es, summaryCn: d.summary_cn,
+      fileName: d.file_name, createdBy: d.created_by_name || d.created_by,
       createdAt: d.created_at?.toISOString().split('T')[0],
       contestations
     });
@@ -490,7 +306,7 @@ app.delete("/api/documents/:id", requireAuth, async (req, res) => {
   }
 });
 
-// 📋 GET actividades por documento
+// 📋 GET actividades
 app.get("/api/activities", requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(`
@@ -500,16 +316,11 @@ app.get("/api/activities", requireAuth, async (req, res) => {
       ORDER BY a.due_date ASC
     `);
     res.json(rows.map(a => ({
-      id: a.id,
-      docId: a.document_id,
-      docTitle: a.doc_title,
-      description: a.description,
-      subDescription: a.sub_description,
+      id: a.id, docId: a.document_id, docTitle: a.doc_title,
+      description: a.description, subDescription: a.sub_description,
       dueDate: a.due_date?.toISOString().split('T')[0],
-      status: a.status,
-      priority: a.priority,
-      completedBy: a.completed_by,
-      completedAt: a.completed_at
+      status: a.status, priority: a.priority,
+      completedBy: a.completed_by, completedAt: a.completed_at
     })));
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -528,7 +339,6 @@ app.put("/api/activities/:id/complete", requireAuth, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
 
 // 🤖 Endpoint de análisis con IA (Gemini)
 app.post("/api/analyze", requireAuth, async (req, res) => {
@@ -551,12 +361,12 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
                 }
               },
               {
-                text: `Analiza este documento y responde SOLO con JSON válido sin markdown:
-{"authority":"","department":"","company":"","notificationDate":"YYYY-MM-DD","emissionDate":"YYYY-MM-DD","daysLimit":10,"dayType":"Días hábiles","trarniteNumber":"","title":"","summaryEs":"resumen breve en español","summaryCn":"简短摘要","activities":[""]}`
+                text: `Analiza este documento y responde SOLO con JSON válido sin markdown:\n{"authority":"","department":"","company":"","notificationDate":"YYYY-MM-DD","emissionDate":"YYYY-MM-DD","daysLimit":10,"dayType":"Días hábiles","trarniteNumber":"","title":"","summaryEs":"resumen breve en español","summaryCn":"简短摘要","activities":[""]}`
+              }
             ]
           }],
-          generationConfig: { 
-            temperature: 0.1, 
+          generationConfig: {
+            temperature: 0.1,
             maxOutputTokens: 8192,
             responseMimeType: "application/json"
           }
@@ -572,14 +382,6 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
     const geminiData = await geminiRes.json();
     const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
 
-    // Logging temporal para debug
-    console.log("=== GEMINI RAW RESPONSE ===");
-    console.log(JSON.stringify(geminiData, null, 2));
-    console.log("=== TEXT EXTRACTED ===");
-    console.log(text);
-    console.log("=== END ===");
-
-    // Limpiar el texto antes de parsear
     const clean = text
       .replace(/```json/gi, '')
       .replace(/```/g, '')
@@ -598,13 +400,12 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
   }
 });
 
-// 📧 Notificación nuevo documento (placeholder)
+// 📧 Notificación nuevo documento
 app.post("/api/notify/new-document", requireAuth, async (req, res) => {
   try {
     const [users] = await pool.query(
       "SELECT email FROM users WHERE role IN ('Admin', 'Operator')"
     );
-    // TODO: implementar envío SMTP real
     console.log(`Notificación enviada a ${users.length} usuarios`);
     res.json({ ok: true, recipients: users.length });
   } catch (error) {
@@ -612,7 +413,7 @@ app.post("/api/notify/new-document", requireAuth, async (req, res) => {
   }
 });
 
-// 🔍 Endpoint temporal para listar modelos disponibles
+// 🔍 Listar modelos Gemini disponibles
 app.get("/api/list-models", async (req, res) => {
   const r = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models?key=${process.env.GEMINI_API_KEY}`
@@ -620,8 +421,6 @@ app.get("/api/list-models", async (req, res) => {
   const data = await r.json();
   res.json(data.models?.map(m => m.name) || data);
 });
-
-
 
 // 🔟 Arrancar servidor
 const PORT = 3001;
