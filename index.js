@@ -591,6 +591,15 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
   }
 });
 
+// 🔍 Endpoint temporal para listar modelos disponibles
+app.get("/api/list-models", async (req, res) => {
+  const r = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models?key=${process.env.GEMINI_API_KEY}`
+  );
+  const data = await r.json();
+  res.json(data.models?.map(m => m.name) || data);
+});
+
 // 🔟 Arrancar servidor
 const PORT = 3001;
 app.listen(PORT, () => {
