@@ -520,6 +520,68 @@ app.put("/api/activities/:id/complete", requireAuth, async (req, res) => {
   }
 });
 
+
+// 🤖 Endpoint de análisis con IA (Gemini)
+app.post("/api/analyze", requireAuth, async (req, res) => {
+  const { fileData, mimeType } = req.body;
+  if (!fileData) return res.status(400).json({ error: "fileData requerido" });
+
+  try {
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              {
+                inline_data: {
+                  mime_type: mimeType || "application/pdf",
+                  data: fileData
+                }
+              },
+              {
+                text: `Analiza este documento tributario/legal ecuatoriano y extrae la información en formato JSON exacto sin markdown:
+{
+  "authority": "entidad que emite el documento (ej: SRI, SENAE)",
+  "department": "departamento o dirección específica",
+  "company": "empresa destinataria (ej: ECSA, EXSA)",
+  "notificationDate": "fecha de notificación en formato YYYY-MM-DD",
+  "emissionDate": "fecha de emisión en formato YYYY-MM-DD",
+  "daysLimit": número de días para responder (integer),
+  "dayType": "Días hábiles o Días calendario",
+  "trarniteNumber": "número de trámite o expediente",
+  "title": "título descriptivo del documento en español",
+  "summaryEs": "resumen detallado en español de 3-5 párrafos explicando el contenido, requerimientos y plazos",
+  "summaryCn": "resumen detallado en chino mandarín de 3-5 párrafos",
+  "activities": ["lista de actividades o acciones requeridas"]
+}`
+              }
+            ]
+          }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
+        })
+      }
+    );
+
+    if (!geminiRes.ok) {
+      const errData = await geminiRes.json();
+      throw new Error(errData.error?.message || "Error en Gemini API");
+    }
+
+    const geminiData = await geminiRes.json();
+    const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+    const clean = text.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(clean);
+    res.json(parsed);
+
+  } catch (error) {
+    console.error("Analyze error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 🔟 Arrancar servidor
 const PORT = 3001;
 app.listen(PORT, () => {
