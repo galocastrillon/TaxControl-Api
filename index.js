@@ -551,11 +551,8 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
                 }
               },
               {
-                text: `Analiza este documento tributario/legal ecuatoriano y extrae la información. 
-Responde ÚNICAMENTE con un objeto JSON válido, sin markdown, sin bloques de código, sin texto adicional antes o después.
-El JSON debe tener exactamente esta estructura:
-{"authority":"entidad que emite el documento","department":"departamento específico","company":"empresa destinataria","notificationDate":"YYYY-MM-DD","emissionDate":"YYYY-MM-DD","daysLimit":10,"dayType":"Días hábiles","trarniteNumber":"número de trámite","title":"título del documento","summaryEs":"resumen en español de 3 párrafos","summaryCn":"resumen en chino mandarín de 3 párrafos","activities":["actividad 1","actividad 2"]}`
-              }
+                text: `Analiza este documento y responde SOLO con JSON válido sin markdown:
+{"authority":"","department":"","company":"","notificationDate":"YYYY-MM-DD","emissionDate":"YYYY-MM-DD","daysLimit":10,"dayType":"Días hábiles","trarniteNumber":"","title":"","summaryEs":"resumen breve en español","summaryCn":"简短摘要","activities":[""]}`
             ]
           }],
           generationConfig: { 
