@@ -279,6 +279,11 @@ app.post("/api/documents", requireAuth, async (req, res) => {
     return res.status(400).json({ error: "Campos requeridos: title, trarniteNumber, authority, dueDate" });
   }
 
+  // Asegurar que los campos NOT NULL tengan valores
+  const notificationDate = d.notificationDate || new Date().toISOString().split('T')[0];
+  const dueDate = d.dueDate || new Date().toISOString().split('T')[0];
+  const dayType = d.dayType || 'Días hábiles';
+
   try {
     const id = d.id || `d${Date.now()}`;
     await pool.query(`
@@ -289,7 +294,7 @@ app.post("/api/documents", requireAuth, async (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       id, d.title, d.trarniteNumber, d.company || null, d.authority, d.department || null,
-      d.notificationDate, d.daysLimit || 0, d.dayType, d.dueDate,
+      notificationDate, d.daysLimit || 0, dayType, dueDate,
       d.status || "Inicializado", d.summaryEs || '', d.summaryCn || '',
       d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.id
     ]);
@@ -305,9 +310,15 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
   const d = req.body;
   const id = req.params.id;
 
+  // Validar campos requeridos
   if (!d.title || !d.trarniteNumber || !d.authority || !d.dueDate) {
     return res.status(400).json({ error: "Campos requeridos: title, trarniteNumber, authority, dueDate" });
   }
+
+  // Asegurar que los campos NOT NULL tengan valores
+  const notificationDate = d.notificationDate || new Date().toISOString().split('T')[0];
+  const dueDate = d.dueDate || new Date().toISOString().split('T')[0];
+  const dayType = d.dayType || 'Días hábiles';
 
   try {
     const [result] = await pool.query(`
@@ -319,8 +330,8 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
       WHERE id = ?
     `, [
       d.title, d.trarniteNumber, d.company || null, d.authority,
-      d.department || null, d.notificationDate, d.daysLimit || 0, d.dayType,
-      d.dueDate, d.status || 'Inicializado', d.summaryEs || '', d.summaryCn || '',
+      d.department || null, notificationDate, d.daysLimit || 0, dayType,
+      dueDate, d.status || 'Inicializado', d.summaryEs || '', d.summaryCn || '',
       d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.id, id
     ]);
 
