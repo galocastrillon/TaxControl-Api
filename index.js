@@ -255,11 +255,12 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
       lastEditedBy: d.last_edited_by_name || d.last_edited_by,
       lastEditedAt: d.last_edited_at?.toISOString().split('T')[0],
       contestations: contestations.map(c => ({
-        id: c.id, documentId: c.document_id,
+        id: c.id,
         date: c.presentation_date?.toISOString().split('T')[0],
-        authority: c.authority_received, notes: c.notes,
+        authority: c.authority_received,
+        notes: c.notes,
         contact_method: c.contact_method,
-        registeredBy: c.registered_by_name || c.registered_by,
+        registered_by: c.registered_by_name || c.registered_by,
         registration_date: c.registration_date?.toISOString().split('T')[0],
         files: []
       })),
@@ -426,19 +427,22 @@ app.put("/api/activities/:id/complete", requireAuth, async (req, res) => {
 // 💬 GET contestaciones de un documento
 app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
   try {
-    const [rows] = await pool.query(
-      "SELECT * FROM contestations WHERE document_id = ? ORDER BY registration_date DESC",
-      [req.params.id]
-    );
+    const [rows] = await pool.query(`
+      SELECT c.*, u.name as registered_by_name
+      FROM contestations c
+      LEFT JOIN users u ON c.registered_by = u.id
+      WHERE c.document_id = ?
+      ORDER BY c.registration_date DESC
+    `, [req.params.id]);
     res.json(rows.map(c => ({
       id: c.id,
-      documentId: c.document_id,
-      presentationDate: c.presentation_date?.toISOString().split('T')[0],
-      authorityReceived: c.authority_received,
+      date: c.presentation_date?.toISOString().split('T')[0],
+      authority: c.authority_received,
       notes: c.notes,
-      contactMethod: c.contact_method,
-      registeredBy: c.registered_by,
-      registrationDate: c.registration_date?.toISOString().split('T')[0]
+      contact_method: c.contact_method,
+      registered_by: c.registered_by_name || c.registered_by,
+      registration_date: c.registration_date?.toISOString().split('T')[0],
+      files: []
     })));
   } catch (error) {
     res.status(500).json({ error: error.message });
