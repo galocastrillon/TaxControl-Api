@@ -450,16 +450,27 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
       WHERE c.document_id = ?
       ORDER BY c.registration_date DESC
     `, [req.params.id]);
-    res.json(rows.map(c => ({
-      id: c.id,
-      date: c.presentation_date?.toISOString().split('T')[0],
-      authority: c.authority_received,
-      notes: c.notes,
-      contact_method: c.contact_method,
-      registered_by: c.registered_by_name || c.registered_by,
-      registration_date: c.registration_date?.toISOString().split('T')[0],
-      files: []
-    })));
+
+    // Obtener archivos para cada contestación
+    const contestations = [];
+    for (const c of rows) {
+      const [files] = await pool.query(
+        'SELECT * FROM contestation_files WHERE contestation_id = ?',
+        [c.id]
+      );
+      contestations.push({
+        id: c.id,
+        date: c.presentation_date?.toISOString().split('T')[0],
+        authority: c.authority_received,
+        notes: c.notes,
+        contact_method: c.contact_method,
+        registered_by: c.registered_by_name || c.registered_by,
+        registration_date: c.registration_date?.toISOString().split('T')[0],
+        files: files.map(f => ({ name: f.file_name, url: f.file_url }))
+      });
+    }
+
+    res.json(contestations);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -467,7 +478,7 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
 
 // 💬 POST crear contestación
 app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
-  const { date, authority, notes, contact_method } = req.body;
+  const { date, authority, notes, contact_method, files } = req.body;
 
   if (!date || !authority) {
     return res.status(400).json({ error: "Campos requeridos: date, authority" });
@@ -481,6 +492,21 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [contestationId, req.params.id, date, authority, notes || '', contact_method || '', req.user.user_id]
     );
+
+    // Guardar archivos asociados si existen
+    if (files && Array.isArray(files) && files.length > 0) {
+      for (const file of files) {
+        if (file.name && file.url) {
+          const fileId = `cf${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          await pool.query(
+            `INSERT INTO contestation_files (id, contestation_id, file_name, file_url)
+             VALUES (?, ?, ?, ?)`,
+            [fileId, contestationId, file.name, file.url]
+          );
+        }
+      }
+    }
+
     res.status(201).json({
       id: contestationId,
       date,
@@ -489,7 +515,7 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
       contact_method,
       registered_by: req.user.name,
       registration_date: new Date().toISOString().split('T')[0],
-      files: []
+      files: files || []
     });
   } catch (error) {
     console.error("POST /api/documents/:id/contestations error:", error);
