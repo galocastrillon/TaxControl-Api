@@ -301,7 +301,7 @@ app.post("/api/documents", requireAuth, async (req, res) => {
       id, d.title, d.trarniteNumber, d.company || null, d.authority, d.department || null,
       notificationDate, d.daysLimit || 0, dayType, dueDate,
       d.status || "Inicializado", d.summaryEs || '', d.summaryCn || '',
-      d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.id
+      d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.user_id
     ]);
     res.status(201).json({ id, ...d });
   } catch (error) {
@@ -337,7 +337,7 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
       d.title, d.trarniteNumber, d.company || null, d.authority,
       d.department || null, notificationDate, d.daysLimit || 0, dayType,
       dueDate, d.status || 'Inicializado', d.summaryEs || '', d.summaryCn || '',
-      d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.id, id
+      d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.user_id, id
     ]);
 
     if (result.affectedRows === 0) {
@@ -479,7 +479,7 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
       `INSERT INTO contestations
        (id, document_id, presentation_date, authority_received, notes, contact_method, registered_by)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [contestationId, req.params.id, date, authority, notes || '', contact_method || '', req.user.id]
+      [contestationId, req.params.id, date, authority, notes || '', contact_method || '', req.user.user_id]
     );
     res.status(201).json({
       id: contestationId,
