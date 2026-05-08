@@ -184,21 +184,41 @@ app.delete("/api/users/:id", requireAuth, async (req, res) => {
   }
 });
 
-// 📄 GET todos los documentos
+// 📄 GET todos los documentos (con filtros opcionales)
 app.get("/api/documents", requireAuth, async (req, res) => {
   try {
-    const [rows] = await pool.query(`
+    const { company_id, authority } = req.query;
+
+    let query = `
       SELECT d.*, c.name as company_name, u.name as created_by_name, u2.name as last_edited_by_name
       FROM documents d
       LEFT JOIN companies c ON d.company_id = c.id
       LEFT JOIN users u ON d.created_by = u.id
       LEFT JOIN users u2 ON d.last_edited_by = u2.id
-      ORDER BY d.created_at DESC
-    `);
+      WHERE 1=1
+    `;
+    const params = [];
+
+    // Filtro por company_id si se proporciona
+    if (company_id && company_id !== 'Todas') {
+      query += ` AND d.company_id = ?`;
+      params.push(company_id);
+    }
+
+    // Filtro por authority si se proporciona
+    if (authority && authority !== 'Todas') {
+      query += ` AND d.authority LIKE ?`;
+      params.push(`%${authority}%`);
+    }
+
+    query += ` ORDER BY d.created_at DESC`;
+
+    const [rows] = await pool.query(query, params);
     const docs = rows.map(d => ({
       id: d.id,
       title: d.title,
       trarniteNumber: d.trarnite_number,
+      companyId: d.company_id,
       company: d.company_id || d.company_name,
       authority: d.authority,
       department: d.department,
