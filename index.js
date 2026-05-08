@@ -629,30 +629,34 @@ const getEmailTransporter = async () => {
   try {
     // For now, use environment variables if available
     if (process.env.SMTP_HOST && process.env.SMTP_USER) {
+      const port = parseInt(process.env.SMTP_PORT || "587");
       return nodemailer.createTransport({
         host: process.env.SMTP_HOST,
-        port: parseInt(process.env.SMTP_PORT || "465"),
-        secure: process.env.SMTP_USE_SSL === "true",
+        port: port,
+        secure: port === 465,
         auth: {
           user: process.env.SMTP_USER,
           pass: process.env.SMTP_PASSWORD
         },
         tls: {
-          rejectUnauthorized: false
+          rejectUnauthorized: false,
+          minVersion: "TLSv1.2"
         }
       });
     }
-    // Fallback to hardcoded config for testing
+    // Fallback to hardcoded config for testing - try STARTTLS first (port 587)
     return nodemailer.createTransport({
       host: "owa1.corriente.com.ec",
-      port: 465,
-      secure: true,
+      port: 587,
+      secure: false,
+      requireTLS: true,
       auth: {
         user: "ecsa\\monitoreo",
         pass: process.env.SMTP_PASSWORD || ""
       },
       tls: {
-        rejectUnauthorized: false
+        rejectUnauthorized: false,
+        minVersion: "TLSv1.2"
       }
     });
   } catch (error) {
