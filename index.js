@@ -623,36 +623,57 @@ app.post("/api/notify/new-document", requireAuth, async (req, res) => {
   }
 });
 
+// 📬 Obtener configuración SMTP de la base de datos
+const getSmtpConfig = async () => {
+  try {
+    const [rows] = await pool.query("SELECT * FROM smtp_config WHERE id = 1");
+    if (rows.length > 0) {
+      return rows[0];
+    }
+    // Fallback si no existe configuración
+    return {
+      host: "owa1.corriente.com.ec",
+      port: 465,
+      user: "ecsa\\monitoreo",
+      password: "",
+      from_email: "monitoreo@corriente.com.ec",
+      from_name: "Tax Control ECSA",
+      use_ssl: true
+    };
+  } catch (error) {
+    console.error("Error getting SMTP config:", error);
+    return {
+      host: "owa1.corriente.com.ec",
+      port: 465,
+      user: "ecsa\\monitoreo",
+      password: "",
+      from_email: "monitoreo@corriente.com.ec",
+      from_name: "Tax Control ECSA",
+      use_ssl: true
+    };
+  }
+};
+
 // 📬 Crear transporter de email desde configuración SMTP
 const getEmailTransporter = async () => {
-  // Try to get SMTP config from environment or database
   try {
-    // For now, use environment variables if available
-    if (process.env.SMTP_HOST && process.env.SMTP_USER) {
-      const port = parseInt(process.env.SMTP_PORT || "587");
-      return nodemailer.createTransport({
-        host: process.env.SMTP_HOST,
-        port: port,
-        secure: port === 465,
-        auth: {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASSWORD
-        },
-        tls: {
-          rejectUnauthorized: false,
-          minVersion: "TLSv1.2"
-        }
-      });
+    const config = await getSmtpConfig();
+
+    if (!config.password) {
+      throw new Error("SMTP password is not configured. Please set it in the Admin panel.");
     }
-    // Fallback to hardcoded config for testing - try STARTTLS first (port 587)
+
+    const port = config.port || 465;
+    const isSecure = config.use_ssl === true || config.use_ssl === 1;
+
     return nodemailer.createTransport({
-      host: "owa1.corriente.com.ec",
-      port: 587,
-      secure: false,
-      requireTLS: true,
+      host: config.host,
+      port: port,
+      secure: isSecure && port === 465,
+      requireTLS: !isSecure || port === 587,
       auth: {
-        user: "ecsa\\monitoreo",
-        pass: process.env.SMTP_PASSWORD || ""
+        user: config.user,
+        pass: config.password
       },
       tls: {
         rejectUnauthorized: false,
@@ -660,7 +681,7 @@ const getEmailTransporter = async () => {
       }
     });
   } catch (error) {
-    console.error("Error creating transporter:", error);
+    console.error("Error creating email transporter:", error);
     throw error;
   }
 };
@@ -669,10 +690,11 @@ const getEmailTransporter = async () => {
 app.post("/api/test-email/basic", requireAuth, async (req, res) => {
   try {
     const transporter = await getEmailTransporter();
+    const config = await getSmtpConfig();
     const testEmail = req.body.testEmail || "test@example.com";
 
     const info = await transporter.sendMail({
-      from: process.env.SMTP_FROM_EMAIL || '"Tax Control" <monitoreo@corriente.com.ec>',
+      from: `"${config.from_name}" <${config.from_email}>`,
       to: testEmail,
       subject: "✅ Prueba Básica SMTP - Tax Control",
       html: `
@@ -699,10 +721,11 @@ app.post("/api/test-email/basic", requireAuth, async (req, res) => {
 app.post("/api/test-email/reset", requireAuth, async (req, res) => {
   try {
     const transporter = await getEmailTransporter();
+    const config = await getSmtpConfig();
     const testEmail = req.body.testEmail || "test@example.com";
 
     const info = await transporter.sendMail({
-      from: process.env.SMTP_FROM_EMAIL || '"Tax Control" <monitoreo@corriente.com.ec>',
+      from: `"${config.from_name}" <${config.from_email}>`,
       to: testEmail,
       subject: "🔑 Restablecer Contraseña - Tax Control",
       html: `
@@ -735,10 +758,11 @@ app.post("/api/test-email/reset", requireAuth, async (req, res) => {
 app.post("/api/test-email/invitation", requireAuth, async (req, res) => {
   try {
     const transporter = await getEmailTransporter();
+    const config = await getSmtpConfig();
     const testEmail = req.body.testEmail || "test@example.com";
 
     const info = await transporter.sendMail({
-      from: process.env.SMTP_FROM_EMAIL || '"Tax Control" <monitoreo@corriente.com.ec>',
+      from: `"${config.from_name}" <${config.from_email}>`,
       to: testEmail,
       subject: "👥 Invitación a Tax Control",
       html: `
@@ -776,10 +800,11 @@ app.post("/api/test-email/invitation", requireAuth, async (req, res) => {
 app.post("/api/test-email/alert", requireAuth, async (req, res) => {
   try {
     const transporter = await getEmailTransporter();
+    const config = await getSmtpConfig();
     const testEmail = req.body.testEmail || "test@example.com";
 
     const info = await transporter.sendMail({
-      from: process.env.SMTP_FROM_EMAIL || '"Tax Control" <monitoreo@corriente.com.ec>',
+      from: `"${config.from_name}" <${config.from_email}>`,
       to: testEmail,
       subject: "🔔 Alerta - Plazo Próximo a Vencer",
       html: `
@@ -804,6 +829,52 @@ app.post("/api/test-email/alert", requireAuth, async (req, res) => {
     res.json({ ok: true, messageId: info.messageId, message: "Email de alerta enviado correctamente" });
   } catch (error) {
     console.error("Alert email test error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ⚙️ Obtener configuración SMTP
+app.get("/api/smtp-config", requireAuth, async (req, res) => {
+  try {
+    const config = await getSmtpConfig();
+    // No enviar la contraseña al frontend
+    res.json({
+      host: config.host,
+      port: config.port,
+      user: config.user,
+      from_email: config.from_email,
+      from_name: config.from_name,
+      use_ssl: config.use_ssl,
+      password_set: !!config.password
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ⚙️ Guardar configuración SMTP
+app.post("/api/smtp-config", requireAuth, async (req, res) => {
+  try {
+    const { host, port, user, password, from_email, from_name, use_ssl } = req.body;
+
+    if (!host || !port || !user || !from_email) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    // Si no se proporciona contraseña, mantener la anterior
+    let query, params;
+    if (password) {
+      query = `UPDATE smtp_config SET host=?, port=?, user=?, password=?, from_email=?, from_name=?, use_ssl=? WHERE id=1`;
+      params = [host, port, user, password, from_email, from_name, use_ssl ? 1 : 0];
+    } else {
+      query = `UPDATE smtp_config SET host=?, port=?, user=?, from_email=?, from_name=?, use_ssl=? WHERE id=1`;
+      params = [host, port, user, from_email, from_name, use_ssl ? 1 : 0];
+    }
+
+    await pool.query(query, params);
+    res.json({ ok: true, message: "SMTP configuration saved successfully" });
+  } catch (error) {
+    console.error("SMTP config save error:", error);
     res.status(500).json({ error: error.message });
   }
 });
