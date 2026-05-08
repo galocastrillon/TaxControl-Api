@@ -340,6 +340,81 @@ app.put("/api/activities/:id/complete", requireAuth, async (req, res) => {
   }
 });
 
+// 💬 GET contestaciones de un documento
+app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      "SELECT * FROM contestations WHERE document_id = ? ORDER BY registration_date DESC",
+      [req.params.id]
+    );
+    res.json(rows.map(c => ({
+      id: c.id,
+      documentId: c.document_id,
+      presentationDate: c.presentation_date?.toISOString().split('T')[0],
+      authorityReceived: c.authority_received,
+      notes: c.notes,
+      contactMethod: c.contact_method,
+      registeredBy: c.registered_by,
+      registrationDate: c.registration_date?.toISOString().split('T')[0]
+    })));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 💬 POST crear contestación
+app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
+  const { presentationDate, authorityReceived, notes, contactMethod } = req.body;
+  try {
+    const contestationId = `c${Date.now()}`;
+    await pool.query(
+      `INSERT INTO contestations
+       (id, document_id, presentation_date, authority_received, notes, contact_method, registered_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [contestationId, req.params.id, presentationDate, authorityReceived, notes, contactMethod, req.user.user_id]
+    );
+    res.status(201).json({
+      id: contestationId,
+      documentId: req.params.id,
+      presentationDate,
+      authorityReceived,
+      notes,
+      contactMethod,
+      registeredBy: req.user.name,
+      registrationDate: new Date().toISOString().split('T')[0]
+    });
+  } catch (error) {
+    console.error("POST /api/documents/:id/contestations error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 💬 PUT actualizar contestación
+app.put("/api/contestations/:id", requireAuth, async (req, res) => {
+  const { presentationDate, authorityReceived, notes, contactMethod } = req.body;
+  try {
+    await pool.query(
+      `UPDATE contestations
+       SET presentation_date=?, authority_received=?, notes=?, contact_method=?
+       WHERE id=?`,
+      [presentationDate, authorityReceived, notes, contactMethod, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 💬 DELETE eliminar contestación
+app.delete("/api/contestations/:id", requireAuth, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM contestations WHERE id = ?", [req.params.id]);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 🤖 Endpoint de análisis con IA (Gemini)
 app.post("/api/analyze", requireAuth, async (req, res) => {
   const { fileData, mimeType } = req.body;
