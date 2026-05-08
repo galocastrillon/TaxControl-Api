@@ -182,10 +182,11 @@ app.delete("/api/users/:id", requireAuth, async (req, res) => {
 app.get("/api/documents", requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(`
-      SELECT d.*, c.name as company_name, u.name as created_by_name
+      SELECT d.*, c.name as company_name, u.name as created_by_name, u2.name as last_edited_by_name
       FROM documents d
       LEFT JOIN companies c ON d.company_id = c.id
       LEFT JOIN users u ON d.created_by = u.id
+      LEFT JOIN users u2 ON d.last_edited_by = u2.id
       ORDER BY d.created_at DESC
     `);
     const docs = rows.map(d => ({
@@ -203,8 +204,11 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       summaryEs: d.summary_es,
       summaryCn: d.summary_cn,
       fileName: d.file_name,
+      fileUrl: d.file_url,
       createdBy: d.created_by_name || d.created_by,
       createdAt: d.created_at?.toISOString().split('T')[0],
+      lastEditedBy: d.last_edited_by_name || d.last_edited_by,
+      lastEditedAt: d.last_edited_at?.toISOString().split('T')[0],
       contestations: []
     }));
     res.json(docs);
@@ -218,17 +222,24 @@ app.get("/api/documents", requireAuth, async (req, res) => {
 app.get("/api/documents/:id", requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(`
-      SELECT d.*, c.name as company_name, u.name as created_by_name
+      SELECT d.*, c.name as company_name, u.name as created_by_name, u2.name as last_edited_by_name
       FROM documents d
       LEFT JOIN companies c ON d.company_id = c.id
       LEFT JOIN users u ON d.created_by = u.id
+      LEFT JOIN users u2 ON d.last_edited_by = u2.id
       WHERE d.id = ?
     `, [req.params.id]);
     if (rows.length === 0)
       return res.status(404).json({ error: "Documento no encontrado" });
     const d = rows[0];
-    const [contestations] = await pool.query(
-      "SELECT * FROM contestations WHERE document_id = ?", [req.params.id]
+    const [contestations] = await pool.query(`
+      SELECT c.*, u.name as registered_by_name
+      FROM contestations c
+      LEFT JOIN users u ON c.registered_by = u.id
+      WHERE c.document_id = ?
+    `, [req.params.id]);
+    const [attachments] = await pool.query(
+      "SELECT * FROM document_attachments WHERE document_id = ?", [req.params.id]
     );
     res.json({
       id: d.id, title: d.title, trarniteNumber: d.trarnite_number,
@@ -238,9 +249,21 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
       daysLimit: d.days_limit, dayType: d.day_type,
       dueDate: d.due_date?.toISOString().split('T')[0],
       status: d.status, summaryEs: d.summary_es, summaryCn: d.summary_cn,
-      fileName: d.file_name, createdBy: d.created_by_name || d.created_by,
+      fileName: d.file_name, fileUrl: d.file_url, relatedDoc: d.related_doc_id,
+      createdBy: d.created_by_name || d.created_by,
       createdAt: d.created_at?.toISOString().split('T')[0],
-      contestations
+      lastEditedBy: d.last_edited_by_name || d.last_edited_by,
+      lastEditedAt: d.last_edited_at?.toISOString().split('T')[0],
+      contestations: contestations.map(c => ({
+        id: c.id, documentId: c.document_id,
+        date: c.presentation_date?.toISOString().split('T')[0],
+        authority: c.authority_received, notes: c.notes,
+        contact_method: c.contact_method,
+        registeredBy: c.registered_by_name || c.registered_by,
+        registration_date: c.registration_date?.toISOString().split('T')[0],
+        files: []
+      })),
+      attachments
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -250,19 +273,24 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
 // 📄 POST crear documento
 app.post("/api/documents", requireAuth, async (req, res) => {
   const d = req.body;
+
+  if (!d.title || !d.trarniteNumber || !d.authority || !d.dueDate) {
+    return res.status(400).json({ error: "Campos requeridos: title, trarniteNumber, authority, dueDate" });
+  }
+
   try {
     const id = d.id || `d${Date.now()}`;
     await pool.query(`
       INSERT INTO documents
         (id, title, trarnite_number, company_id, authority, department,
          notification_date, days_limit, day_type, due_date, status,
-         summary_es, summary_cn, file_name, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         summary_es, summary_cn, file_name, file_url, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
-      id, d.title, d.trarniteNumber, d.company, d.authority, d.department,
-      d.notificationDate, d.daysLimit, d.dayType, d.dueDate,
-      d.status || "Inicializado", d.summaryEs, d.summaryCn,
-      d.fileName, req.user.id
+      id, d.title, d.trarniteNumber, d.company || null, d.authority, d.department || null,
+      d.notificationDate, d.daysLimit || 0, d.dayType, d.dueDate,
+      d.status || "Inicializado", d.summaryEs || '', d.summaryCn || '',
+      d.fileName || null, d.fileUrl || null, req.user.id
     ]);
     res.status(201).json({ id, ...d });
   } catch (error) {
@@ -274,20 +302,31 @@ app.post("/api/documents", requireAuth, async (req, res) => {
 // 📄 PUT actualizar documento
 app.put("/api/documents/:id", requireAuth, async (req, res) => {
   const d = req.body;
+  const id = req.params.id;
+
+  if (!d.title || !d.trarniteNumber || !d.authority || !d.dueDate) {
+    return res.status(400).json({ error: "Campos requeridos: title, trarniteNumber, authority, dueDate" });
+  }
+
   try {
-    await pool.query(`
+    const [result] = await pool.query(`
       UPDATE documents SET
         title = ?, trarnite_number = ?, company_id = ?, authority = ?,
         department = ?, notification_date = ?, days_limit = ?, day_type = ?,
         due_date = ?, status = ?, summary_es = ?, summary_cn = ?,
-        file_name = ?, last_edited_by = ?, last_edited_at = NOW()
+        file_name = ?, file_url = ?, last_edited_by = ?, last_edited_at = NOW()
       WHERE id = ?
     `, [
-      d.title, d.trarniteNumber, d.company, d.authority,
-      d.department, d.notificationDate, d.daysLimit, d.dayType,
-      d.dueDate, d.status, d.summaryEs, d.summaryCn,
-      d.fileName, req.user.id, req.params.id
+      d.title, d.trarniteNumber, d.company || null, d.authority,
+      d.department || null, d.notificationDate, d.daysLimit || 0, d.dayType,
+      d.dueDate, d.status || 'Inicializado', d.summaryEs || '', d.summaryCn || '',
+      d.fileName || null, d.fileUrl || null, req.user.id, id
     ]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Documento no encontrado' });
+    }
+
     res.json({ ok: true });
   } catch (error) {
     console.error("PUT /api/documents error:", error);
@@ -409,13 +448,18 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
 // 💬 POST crear contestación
 app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
   const { presentationDate, authorityReceived, notes, contactMethod } = req.body;
+
+  if (!presentationDate || !authorityReceived) {
+    return res.status(400).json({ error: "Campos requeridos: presentationDate, authorityReceived" });
+  }
+
   try {
     const contestationId = `c${Date.now()}`;
     await pool.query(
       `INSERT INTO contestations
        (id, document_id, presentation_date, authority_received, notes, contact_method, registered_by)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [contestationId, req.params.id, presentationDate, authorityReceived, notes, contactMethod, req.user.user_id]
+      [contestationId, req.params.id, presentationDate, authorityReceived, notes || '', contactMethod || '', req.user.id]
     );
     res.status(201).json({
       id: contestationId,
