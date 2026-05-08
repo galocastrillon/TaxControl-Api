@@ -3,6 +3,7 @@ import mysql from "mysql2/promise";
 import cors from "cors";
 import dotenv from "dotenv";
 import crypto from "crypto";
+import nodemailer from "nodemailer";
 
 // 1️⃣ Cargar variables de entorno
 dotenv.config();
@@ -618,6 +619,181 @@ app.post("/api/notify/new-document", requireAuth, async (req, res) => {
     console.log(`Notificación enviada a ${users.length} usuarios`);
     res.json({ ok: true, recipients: users.length });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 📬 Crear transporter de email desde configuración SMTP
+const getEmailTransporter = async () => {
+  // Try to get SMTP config from environment or database
+  try {
+    // For now, use environment variables if available
+    if (process.env.SMTP_HOST && process.env.SMTP_USER) {
+      return nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT || "465"),
+        secure: process.env.SMTP_USE_SSL === "true",
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASSWORD
+        }
+      });
+    }
+    // Fallback to hardcoded config for testing
+    return nodemailer.createTransport({
+      host: "owa1.corriente.com.ec",
+      port: 465,
+      secure: true,
+      auth: {
+        user: "ecsa\\monitoreo",
+        pass: process.env.SMTP_PASSWORD || ""
+      }
+    });
+  } catch (error) {
+    console.error("Error creating transporter:", error);
+    throw error;
+  }
+};
+
+// ✉️ Prueba Básica SMTP
+app.post("/api/test-email/basic", requireAuth, async (req, res) => {
+  try {
+    const transporter = await getEmailTransporter();
+    const testEmail = req.body.testEmail || "test@example.com";
+
+    const info = await transporter.sendMail({
+      from: process.env.SMTP_FROM_EMAIL || '"Tax Control" <monitoreo@corriente.com.ec>',
+      to: testEmail,
+      subject: "✅ Prueba Básica SMTP - Tax Control",
+      html: `
+        <div style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+          <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
+            <h2 style="color: #204070;">✅ Prueba Básica SMTP</h2>
+            <p>Este es un email de prueba para verificar que la configuración SMTP está funcionando correctamente.</p>
+            <p><strong>Fecha:</strong> ${new Date().toLocaleString('es-ES')}</p>
+            <p style="color: #666; margin-top: 20px;">Sistema Tax Control</p>
+          </div>
+        </div>
+      `
+    });
+
+    console.log("Basic email test sent:", info.messageId);
+    res.json({ ok: true, messageId: info.messageId, message: "Prueba básica enviada correctamente" });
+  } catch (error) {
+    console.error("Basic email test error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🔑 Prueba Reset Password
+app.post("/api/test-email/reset", requireAuth, async (req, res) => {
+  try {
+    const transporter = await getEmailTransporter();
+    const testEmail = req.body.testEmail || "test@example.com";
+
+    const info = await transporter.sendMail({
+      from: process.env.SMTP_FROM_EMAIL || '"Tax Control" <monitoreo@corriente.com.ec>',
+      to: testEmail,
+      subject: "🔑 Restablecer Contraseña - Tax Control",
+      html: `
+        <div style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+          <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
+            <h2 style="color: #204070;">🔑 Restablecer Contraseña</h2>
+            <p>Ha solicitado restablecer su contraseña en Tax Control.</p>
+            <p style="margin: 30px 0;">
+              <a href="http://taxcontrolapp.192.168.60.109.sslip.io/#/reset-password?token=DEMO_TOKEN_12345"
+                 style="background-color: #204070; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
+                Restablecer Contraseña
+              </a>
+            </p>
+            <p style="color: #666; font-size: 12px;">Este enlace es válido por 24 horas.</p>
+            <p style="color: #666; margin-top: 20px;">Sistema Tax Control</p>
+          </div>
+        </div>
+      `
+    });
+
+    console.log("Reset password email test sent:", info.messageId);
+    res.json({ ok: true, messageId: info.messageId, message: "Email de reset enviado correctamente" });
+  } catch (error) {
+    console.error("Reset password email test error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 👥 Prueba Invitación
+app.post("/api/test-email/invitation", requireAuth, async (req, res) => {
+  try {
+    const transporter = await getEmailTransporter();
+    const testEmail = req.body.testEmail || "test@example.com";
+
+    const info = await transporter.sendMail({
+      from: process.env.SMTP_FROM_EMAIL || '"Tax Control" <monitoreo@corriente.com.ec>',
+      to: testEmail,
+      subject: "👥 Invitación a Tax Control",
+      html: `
+        <div style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+          <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
+            <h2 style="color: #204070;">👥 Ha sido invitado a Tax Control</h2>
+            <p>Ha sido invitado a unirse a Tax Control, una plataforma de gestión tributaria.</p>
+            <p><strong>Credenciales temporales:</strong></p>
+            <ul>
+              <li>Usuario: ${testEmail}</li>
+              <li>Contraseña Temporal: TempPassword123!</li>
+            </ul>
+            <p style="margin: 30px 0;">
+              <a href="http://taxcontrolapp.192.168.60.109.sslip.io/#/login"
+                 style="background-color: #204070; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
+                Ingresar a Tax Control
+              </a>
+            </p>
+            <p style="color: #666; font-size: 12px;">Se recomienda cambiar su contraseña al primer inicio de sesión.</p>
+            <p style="color: #666; margin-top: 20px;">Sistema Tax Control</p>
+          </div>
+        </div>
+      `
+    });
+
+    console.log("Invitation email test sent:", info.messageId);
+    res.json({ ok: true, messageId: info.messageId, message: "Email de invitación enviado correctamente" });
+  } catch (error) {
+    console.error("Invitation email test error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🔔 Prueba Alerta
+app.post("/api/test-email/alert", requireAuth, async (req, res) => {
+  try {
+    const transporter = await getEmailTransporter();
+    const testEmail = req.body.testEmail || "test@example.com";
+
+    const info = await transporter.sendMail({
+      from: process.env.SMTP_FROM_EMAIL || '"Tax Control" <monitoreo@corriente.com.ec>',
+      to: testEmail,
+      subject: "🔔 Alerta - Plazo Próximo a Vencer",
+      html: `
+        <div style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+          <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
+            <h2 style="color: #d97706;">🔔 Alerta - Plazo Próximo a Vencer</h2>
+            <p style="color: #666;">Se le notifica que el siguiente documento tiene un plazo que vence próximamente:</p>
+            <div style="background-color: #fef3c7; border-left: 4px solid #d97706; padding: 15px; margin: 20px 0; border-radius: 4px;">
+              <p><strong>Documento:</strong> ADMISIÓN A TRÁMITE Y TÉRMINO DE PRUEBA</p>
+              <p><strong>Empresa:</strong> Ecuacorriente S.A.</p>
+              <p><strong>Plazo Vence:</strong> 2026-05-26</p>
+              <p><strong>Días Restantes:</strong> 5 días hábiles</p>
+            </div>
+            <p style="color: #666; margin-top: 20px;">Ingrese a Tax Control para más detalles.</p>
+            <p style="color: #666;">Sistema Tax Control</p>
+          </div>
+        </div>
+      `
+    });
+
+    console.log("Alert email test sent:", info.messageId);
+    res.json({ ok: true, messageId: info.messageId, message: "Email de alerta enviado correctamente" });
+  } catch (error) {
+    console.error("Alert email test error:", error);
     res.status(500).json({ error: error.message });
   }
 });
