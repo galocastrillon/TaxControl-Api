@@ -4,6 +4,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
+import cron from "node-cron";
 
 // 1️⃣ Cargar variables de entorno
 dotenv.config();
@@ -347,6 +348,14 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
   const dayType = d.dayType || 'Días hábiles';
 
   try {
+    // Get the old document data
+    const [oldDocRows] = await pool.query('SELECT * FROM documents WHERE id = ?', [id]);
+    if (oldDocRows.length === 0) {
+      return res.status(404).json({ error: 'Documento no encontrado' });
+    }
+    const oldDoc = oldDocRows[0];
+
+    // Update the document
     const [result] = await pool.query(`
       UPDATE documents SET
         title = ?, trarnite_number = ?, company_id = ?, authority = ?,
@@ -363,6 +372,76 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Documento no encontrado' });
+    }
+
+    // Get recipients for notifications
+    const recipients = await getDocumentRecipients(id);
+
+    // Check for status change
+    const oldStatus = oldDoc.status;
+    const newStatus = d.status || 'Inicializado';
+    if (oldStatus !== newStatus) {
+      const subject = `Documento Actualizado: ${d.title} - Estado Cambió a ${newStatus}`;
+      const htmlContent = `
+        <html>
+        <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+          <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
+            <h2 style="color: #204070;">Documento Actualizado</h2>
+            <p>El documento "<strong>${d.title}</strong>" (Trámite: ${d.trarniteNumber})<br/>ha cambiado de estado.</p>
+            <p style="margin-top: 20px;">
+              <strong>Estado anterior:</strong> ${oldStatus}<br/>
+              <strong>Nuevo estado:</strong> ${newStatus}<br/>
+              <strong>Cambio realizado por:</strong> ${req.user.name}<br/>
+              <strong>Fecha:</strong> ${new Date().toLocaleString('es-ES')}
+            </p>
+            <p style="margin-top: 20px; color: #666; font-size: 14px;">
+              Autoridad: ${d.authority}<br/>
+              Departamento: ${d.department || 'N/A'}
+            </p>
+            <p style="color: #999; margin-top: 30px; font-size: 12px;">Tax Control System</p>
+          </div>
+        </body>
+        </html>
+      `;
+      await sendNotificationEmail(recipients, subject, htmlContent, id, 'status_change');
+    }
+    // Check for other field changes (modification)
+    else if (
+      oldDoc.title !== d.title ||
+      oldDoc.trarnite_number !== d.trarniteNumber ||
+      oldDoc.authority !== d.authority ||
+      oldDoc.department !== d.department ||
+      oldDoc.due_date !== dueDate ||
+      oldDoc.summary_es !== (d.summaryEs || '') ||
+      oldDoc.summary_cn !== (d.summaryCn || '')
+    ) {
+      const subject = `Documento Modificado: ${d.title}`;
+      const changedFields = [];
+      if (oldDoc.title !== d.title) changedFields.push(`Título: ${oldDoc.title} → ${d.title}`);
+      if (oldDoc.authority !== d.authority) changedFields.push(`Autoridad: ${oldDoc.authority} → ${d.authority}`);
+      if (oldDoc.department !== d.department) changedFields.push(`Departamento: ${oldDoc.department || 'N/A'} → ${d.department || 'N/A'}`);
+      if (oldDoc.due_date.toISOString().split('T')[0] !== dueDate) changedFields.push(`Fecha de Vencimiento: ${oldDoc.due_date.toISOString().split('T')[0]} → ${dueDate}`);
+
+      const htmlContent = `
+        <html>
+        <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+          <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
+            <h2 style="color: #204070;">Documento Modificado</h2>
+            <p>El documento "<strong>${d.title}</strong>" (Trámite: ${d.trarniteNumber})<br/>ha sido modificado.</p>
+            <p style="margin-top: 20px;"><strong>Campos actualizados:</strong></p>
+            <ul>
+              ${changedFields.map(field => `<li>${field}</li>`).join('')}
+            </ul>
+            <p style="margin-top: 20px;">
+              <strong>Modificado por:</strong> ${req.user.name}<br/>
+              <strong>Fecha:</strong> ${new Date().toLocaleString('es-ES')}
+            </p>
+            <p style="color: #999; margin-top: 30px; font-size: 12px;">Tax Control System</p>
+          </div>
+        </body>
+        </html>
+      `;
+      await sendNotificationEmail(recipients, subject, htmlContent, id, 'modification');
     }
 
     res.json({ ok: true });
@@ -409,12 +488,46 @@ app.post("/api/activities", requireAuth, async (req, res) => {
   const { docId, description, subDescription, dueDate, priority } = req.body;
   try {
     const id = `a${Date.now()}`;
+
+    // Insert the activity
     await pool.query(
       `INSERT INTO activities
        (id, document_id, description, sub_description, due_date, priority, status)
        VALUES (?, ?, ?, ?, ?, ?, 'Pending')`,
       [id, docId, description, subDescription, dueDate, priority || 'Medium']
     );
+
+    // Get document info for notifications
+    const [docRows] = await pool.query('SELECT title, trarnite_number FROM documents WHERE id = ?', [docId]);
+    if (docRows.length > 0) {
+      const doc = docRows[0];
+      const recipients = await getDocumentRecipients(docId);
+
+      const subject = `Actividad Agregada: ${doc.title}`;
+      const htmlContent = `
+        <html>
+        <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+          <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
+            <h2 style="color: #204070;">Actividad Agregada</h2>
+            <p>Se ha agregado una nueva actividad al documento "<strong>${doc.title}</strong>"<br/>(Trámite: ${doc.trarnite_number})</p>
+            <p style="margin-top: 20px;">
+              <strong>Actividad:</strong> ${description}<br/>
+              <strong>Descripción:</strong> ${subDescription || 'N/A'}<br/>
+              <strong>Fecha Límite:</strong> ${dueDate ? new Date(dueDate).toLocaleDateString('es-ES') : 'N/A'}<br/>
+              <strong>Prioridad:</strong> ${priority || 'Medium'}
+            </p>
+            <p style="margin-top: 20px;">
+              <strong>Agregada por:</strong> ${req.user.name}<br/>
+              <strong>Fecha:</strong> ${new Date().toLocaleString('es-ES')}
+            </p>
+            <p style="color: #999; margin-top: 30px; font-size: 12px;">Tax Control System</p>
+          </div>
+        </body>
+        </html>
+      `;
+      await sendNotificationEmail(recipients, subject, htmlContent, docId, 'activity_added');
+    }
+
     res.status(201).json({ id, docId, description, subDescription, dueDate, priority: priority || 'Medium', status: 'Pending' });
   } catch (error) {
     console.error("POST /api/activities error:", error);
@@ -500,6 +613,7 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
 // 💬 POST crear contestación
 app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
   const { date, authority, notes, contact_method, files } = req.body;
+  const documentId = req.params.id;
 
   if (!date || !authority) {
     return res.status(400).json({ error: "Campos requeridos: date, authority" });
@@ -511,7 +625,7 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
       `INSERT INTO contestations
        (id, document_id, presentation_date, authority_received, notes, contact_method, registered_by)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [contestationId, req.params.id, date, authority, notes || '', contact_method || '', req.user.user_id]
+      [contestationId, documentId, date, authority, notes || '', contact_method || '', req.user.user_id]
     );
 
     // Guardar archivos asociados si existen
@@ -526,6 +640,37 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
           );
         }
       }
+    }
+
+    // Get document info for notifications
+    const [docRows] = await pool.query('SELECT title, trarnite_number FROM documents WHERE id = ?', [documentId]);
+    if (docRows.length > 0) {
+      const doc = docRows[0];
+      const recipients = await getDocumentRecipients(documentId);
+
+      const subject = `Contestación Registrada: ${doc.title}`;
+      const htmlContent = `
+        <html>
+        <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+          <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
+            <h2 style="color: #204070;">Contestación Registrada</h2>
+            <p>Se ha registrado una nueva contestación en el documento "<strong>${doc.title}</strong>"<br/>(Trámite: ${doc.trarnite_number})</p>
+            <p style="margin-top: 20px;">
+              <strong>Notas:</strong> ${notes || 'N/A'}<br/>
+              <strong>Método de Contacto:</strong> ${contact_method || 'N/A'}<br/>
+              <strong>Fecha de Presentación:</strong> ${new Date(date).toLocaleDateString('es-ES')}<br/>
+              <strong>Autoridad:</strong> ${authority}
+            </p>
+            <p style="margin-top: 20px;">
+              <strong>Registrada por:</strong> ${req.user.name}<br/>
+              <strong>Fecha de Registro:</strong> ${new Date().toLocaleString('es-ES')}
+            </p>
+            <p style="color: #999; margin-top: 30px; font-size: 12px;">Tax Control System</p>
+          </div>
+        </body>
+        </html>
+      `;
+      await sendNotificationEmail(recipients, subject, htmlContent, documentId, 'contestation_added');
     }
 
     res.status(201).json({
@@ -704,6 +849,124 @@ const getEmailTransporter = async () => {
     console.error("Error creating email transporter:", error);
     throw error;
   }
+};
+
+// 📧 Obtener destinatarios de notificación para un documento
+const getDocumentRecipients = async (documentId) => {
+  try {
+    const [recipients] = await pool.query(`
+      SELECT DISTINCT u.id, u.name, u.email
+      FROM users u
+      WHERE u.id IN (
+        SELECT created_by FROM documents WHERE id = ?
+        UNION
+        SELECT last_edited_by FROM documents WHERE id = ? AND last_edited_by IS NOT NULL
+      )
+      AND u.email IS NOT NULL AND u.email != ''
+    `, [documentId, documentId]);
+
+    return recipients;
+  } catch (error) {
+    console.error("Error getting document recipients:", error);
+    return [];
+  }
+};
+
+// 📧 Función centralizada para enviar notificaciones por email
+const sendNotificationEmail = async (users, subject, htmlContent, documentId, notificationType) => {
+  if (!users || users.length === 0) return;
+
+  try {
+    const transporter = await getEmailTransporter();
+    const config = await getSmtpConfig();
+
+    for (const user of users) {
+      try {
+        await transporter.sendMail({
+          from: `"${config.from_name}" <${config.from_email}>`,
+          to: user.email,
+          subject: subject,
+          html: htmlContent
+        });
+
+        // Log to notifications table
+        await pool.query(
+          'INSERT INTO notifications (user_id, document_id, notification_type, subject, content, email_sent, sent_at) VALUES (?, ?, ?, ?, ?, true, NOW())',
+          [user.id, documentId, notificationType, subject, htmlContent]
+        );
+
+        console.log(`Notification email sent to ${user.email} for document ${documentId}`);
+      } catch (error) {
+        console.error(`Error sending email to ${user.email}:`, error.message);
+        // Log failed notification attempt
+        await pool.query(
+          'INSERT INTO notifications (user_id, document_id, notification_type, subject, content, email_sent) VALUES (?, ?, ?, ?, ?, false)',
+          [user.id, documentId, notificationType, subject, htmlContent]
+        );
+      }
+    }
+  } catch (error) {
+    console.error("Error in sendNotificationEmail:", error);
+  }
+};
+
+// 📧 Generar HTML para notificación de resumen diario
+const generateDailyReminderHTML = (overdueDocs, upcomingDocs) => {
+  let html = `
+    <html>
+    <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+      <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
+        <h2 style="color: #204070;">Resumen Diario de Documentos</h2>
+        <p>A continuación se muestra un resumen de los documentos que requieren atención:</p>
+  `;
+
+  if (overdueDocs && overdueDocs.length > 0) {
+    html += `<h3 style="color: #d9534f;">Documentos Vencidos (${overdueDocs.length})</h3>`;
+    html += '<table style="border-collapse: collapse; width: 100%; margin-bottom: 20px;">';
+    html += '<tr style="background-color: #ffcccc; border: 1px solid #ddd;"><th style="padding: 10px; text-align: left;">Título</th><th style="padding: 10px; text-align: left;">Trámite</th><th style="padding: 10px; text-align: left;">Vencimiento</th><th style="padding: 10px; text-align: left;">Días</th></tr>';
+
+    for (const doc of overdueDocs) {
+      const daysOverdue = Math.floor((Date.now() - new Date(doc.due_date)) / (1000 * 60 * 60 * 24));
+      html += `
+        <tr style="border: 1px solid #ddd;">
+          <td style="padding: 10px;">${doc.title}</td>
+          <td style="padding: 10px;">${doc.trarnite_number}</td>
+          <td style="padding: 10px;">${new Date(doc.due_date).toLocaleDateString('es-ES')}</td>
+          <td style="padding: 10px; color: #d9534f;"><strong>${daysOverdue}</strong></td>
+        </tr>
+      `;
+    }
+    html += '</table>';
+  }
+
+  if (upcomingDocs && upcomingDocs.length > 0) {
+    html += `<h3 style="color: #f0ad4e;">Próximos a Vencer (próximos 7 días) (${upcomingDocs.length})</h3>`;
+    html += '<table style="border-collapse: collapse; width: 100%; margin-bottom: 20px;">';
+    html += '<tr style="background-color: #ffffcc; border: 1px solid #ddd;"><th style="padding: 10px; text-align: left;">Título</th><th style="padding: 10px; text-align: left;">Trámite</th><th style="padding: 10px; text-align: left;">Vencimiento</th><th style="padding: 10px; text-align: left;">Días</th></tr>';
+
+    for (const doc of upcomingDocs) {
+      const daysUntilDue = Math.floor((new Date(doc.due_date) - Date.now()) / (1000 * 60 * 60 * 24));
+      html += `
+        <tr style="border: 1px solid #ddd;">
+          <td style="padding: 10px;">${doc.title}</td>
+          <td style="padding: 10px;">${doc.trarnite_number}</td>
+          <td style="padding: 10px;">${new Date(doc.due_date).toLocaleDateString('es-ES')}</td>
+          <td style="padding: 10px; color: #f0ad4e;"><strong>${daysUntilDue}</strong></td>
+        </tr>
+      `;
+    }
+    html += '</table>';
+  }
+
+  html += `
+      <p style="color: #666; margin-top: 20px; font-size: 14px;">Por favor, revise estos documentos y tome las acciones necesarias.</p>
+      <p style="color: #999; margin-top: 30px; font-size: 12px;">Tax Control System</p>
+      </div>
+    </body>
+    </html>
+  `;
+
+  return html;
 };
 
 // ✉️ Prueba Básica SMTP
@@ -906,6 +1169,82 @@ app.get("/api/list-models", async (req, res) => {
   );
   const data = await r.json();
   res.json(data.models?.map(m => m.name) || data);
+});
+
+// 📅 Programar notificaciones diarias de resumen
+// Se ejecuta diariamente a las 6:00 AM
+cron.schedule('0 6 * * *', async () => {
+  console.log('Running daily reminder notifications...');
+
+  try {
+    const [users] = await pool.query(
+      'SELECT id, name, email FROM users WHERE email IS NOT NULL AND email != "" AND (role = "Admin" OR role = "Operator")'
+    );
+
+    for (const user of users) {
+      try {
+        // Get overdue documents
+        const [overdueDocs] = await pool.query(`
+          SELECT id, title, trarnite_number, due_date, authority
+          FROM documents
+          WHERE (created_by = ? OR last_edited_by = ?)
+          AND due_date < CURDATE()
+          AND status != 'Completado'
+          ORDER BY due_date ASC
+        `, [user.id, user.id]);
+
+        // Get upcoming documents (next 7 days)
+        const [upcomingDocs] = await pool.query(`
+          SELECT id, title, trarnite_number, due_date, authority
+          FROM documents
+          WHERE (created_by = ? OR last_edited_by = ?)
+          AND due_date >= CURDATE()
+          AND due_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
+          AND status != 'Completado'
+          ORDER BY due_date ASC
+        `, [user.id, user.id]);
+
+        if (overdueDocs.length > 0 || upcomingDocs.length > 0) {
+          // Generate HTML email content
+          const htmlContent = generateDailyReminderHTML(overdueDocs, upcomingDocs);
+          const subject = `Resumen Diario: Documentos que Requieren Atención - ${new Date().toLocaleDateString('es-ES')}`;
+
+          try {
+            const transporter = await getEmailTransporter();
+            const config = await getSmtpConfig();
+
+            await transporter.sendMail({
+              from: `"${config.from_name}" <${config.from_email}>`,
+              to: user.email,
+              subject: subject,
+              html: htmlContent
+            });
+
+            // Log notification for first document
+            if (overdueDocs.length > 0) {
+              await pool.query(
+                'INSERT INTO notifications (user_id, document_id, notification_type, subject, content, email_sent, sent_at) VALUES (?, ?, ?, ?, ?, true, NOW())',
+                [user.id, overdueDocs[0].id, 'daily_reminder', subject, htmlContent]
+              );
+            } else if (upcomingDocs.length > 0) {
+              await pool.query(
+                'INSERT INTO notifications (user_id, document_id, notification_type, subject, content, email_sent, sent_at) VALUES (?, ?, ?, ?, ?, true, NOW())',
+                [user.id, upcomingDocs[0].id, 'daily_reminder', subject, htmlContent]
+              );
+            }
+
+            console.log(`Daily reminder sent to ${user.email}`);
+          } catch (error) {
+            console.error(`Error sending daily reminder to ${user.email}:`, error.message);
+          }
+        }
+      } catch (error) {
+        console.error(`Error processing daily reminder for user ${user.id}:`, error.message);
+      }
+    }
+  } catch (error) {
+    console.error('Error in daily reminder cron job:', error);
+  }
 });
 
 // 🔟 Arrancar servidor
