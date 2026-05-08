@@ -285,13 +285,13 @@ app.post("/api/documents", requireAuth, async (req, res) => {
       INSERT INTO documents
         (id, title, trarnite_number, company_id, authority, department,
          notification_date, days_limit, day_type, due_date, status,
-         summary_es, summary_cn, file_name, file_url, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         summary_es, summary_cn, file_name, file_url, related_doc_id, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       id, d.title, d.trarniteNumber, d.company || null, d.authority, d.department || null,
       d.notificationDate, d.daysLimit || 0, d.dayType, d.dueDate,
       d.status || "Inicializado", d.summaryEs || '', d.summaryCn || '',
-      d.fileName || null, d.fileUrl || null, req.user.id
+      d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.id
     ]);
     res.status(201).json({ id, ...d });
   } catch (error) {
@@ -315,13 +315,13 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
         title = ?, trarnite_number = ?, company_id = ?, authority = ?,
         department = ?, notification_date = ?, days_limit = ?, day_type = ?,
         due_date = ?, status = ?, summary_es = ?, summary_cn = ?,
-        file_name = ?, file_url = ?, last_edited_by = ?, last_edited_at = NOW()
+        file_name = ?, file_url = ?, related_doc_id = ?, last_edited_by = ?, last_edited_at = NOW()
       WHERE id = ?
     `, [
       d.title, d.trarniteNumber, d.company || null, d.authority,
       d.department || null, d.notificationDate, d.daysLimit || 0, d.dayType,
       d.dueDate, d.status || 'Inicializado', d.summaryEs || '', d.summaryCn || '',
-      d.fileName || null, d.fileUrl || null, req.user.id, id
+      d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.id, id
     ]);
 
     if (result.affectedRows === 0) {
