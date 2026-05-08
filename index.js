@@ -34,7 +34,7 @@ const pool = mysql.createPool({
 
 // 4️⃣ Endpoint raíz (para healthcheck de Coolify)
 app.get("/", (_req, res) => {
-  res.json({ status: "ok", message: "TaxControl-Api is running" });
+  res.json({ status: "ok", message: "TaxControl-Api is running", version: "2.0" });
 });
 
 // 4️⃣ Endpoint de salud
