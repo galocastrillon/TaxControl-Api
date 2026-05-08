@@ -253,16 +253,16 @@ app.post("/api/documents", requireAuth, async (req, res) => {
   try {
     const id = d.id || `d${Date.now()}`;
     await pool.query(`
-      INSERT INTO documents 
-        (id, title, trarnite_number, company_id, authority, department, 
-         notification_date, days_limit, day_type, due_date, status, 
+      INSERT INTO documents
+        (id, title, trarnite_number, company_id, authority, department,
+         notification_date, days_limit, day_type, due_date, status,
          summary_es, summary_cn, file_name, created_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       id, d.title, d.trarniteNumber, d.company, d.authority, d.department,
       d.notificationDate, d.daysLimit, d.dayType, d.dueDate,
       d.status || "Inicializado", d.summaryEs, d.summaryCn,
-      d.fileName, req.user.user_id
+      d.fileName, req.user.id
     ]);
     res.status(201).json({ id, ...d });
   } catch (error) {
@@ -286,7 +286,7 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
       d.title, d.trarniteNumber, d.company, d.authority,
       d.department, d.notificationDate, d.daysLimit, d.dayType,
       d.dueDate, d.status, d.summaryEs, d.summaryCn,
-      d.fileName, req.user.user_id, req.params.id
+      d.fileName, req.user.id, req.params.id
     ]);
     res.json({ ok: true });
   } catch (error) {
@@ -310,7 +310,7 @@ app.delete("/api/documents/:id", requireAuth, async (req, res) => {
 app.get("/api/activities", requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(`
-      SELECT a.*, d.title as doc_title 
+      SELECT a.*, d.title as doc_title
       FROM activities a
       LEFT JOIN documents d ON a.document_id = d.id
       ORDER BY a.due_date ASC
@@ -322,6 +322,50 @@ app.get("/api/activities", requireAuth, async (req, res) => {
       status: a.status, priority: a.priority,
       completedBy: a.completed_by, completedAt: a.completed_at
     })));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 📋 POST crear actividad
+app.post("/api/activities", requireAuth, async (req, res) => {
+  const { docId, description, subDescription, dueDate, priority } = req.body;
+  try {
+    const id = `a${Date.now()}`;
+    await pool.query(
+      `INSERT INTO activities
+       (id, document_id, description, sub_description, due_date, priority, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'Pending')`,
+      [id, docId, description, subDescription, dueDate, priority || 'Medium']
+    );
+    res.status(201).json({ id, docId, description, subDescription, dueDate, priority: priority || 'Medium', status: 'Pending' });
+  } catch (error) {
+    console.error("POST /api/activities error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 📋 PUT actualizar actividad
+app.put("/api/activities/:id", requireAuth, async (req, res) => {
+  const { description, subDescription, dueDate, priority, status } = req.body;
+  try {
+    await pool.query(
+      `UPDATE activities
+       SET description=?, sub_description=?, due_date=?, priority=?, status=?
+       WHERE id=?`,
+      [description, subDescription, dueDate, priority, status, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 📋 DELETE eliminar actividad
+app.delete("/api/activities/:id", requireAuth, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM activities WHERE id = ?", [req.params.id]);
+    res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
