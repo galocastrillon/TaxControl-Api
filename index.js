@@ -467,10 +467,10 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
 
 // 💬 POST crear contestación
 app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
-  const { presentationDate, authorityReceived, notes, contactMethod } = req.body;
+  const { date, authority, notes, contact_method } = req.body;
 
-  if (!presentationDate || !authorityReceived) {
-    return res.status(400).json({ error: "Campos requeridos: presentationDate, authorityReceived" });
+  if (!date || !authority) {
+    return res.status(400).json({ error: "Campos requeridos: date, authority" });
   }
 
   try {
@@ -479,17 +479,17 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
       `INSERT INTO contestations
        (id, document_id, presentation_date, authority_received, notes, contact_method, registered_by)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [contestationId, req.params.id, presentationDate, authorityReceived, notes || '', contactMethod || '', req.user.id]
+      [contestationId, req.params.id, date, authority, notes || '', contact_method || '', req.user.id]
     );
     res.status(201).json({
       id: contestationId,
-      documentId: req.params.id,
-      presentationDate,
-      authorityReceived,
+      date,
+      authority,
       notes,
-      contactMethod,
-      registeredBy: req.user.name,
-      registrationDate: new Date().toISOString().split('T')[0]
+      contact_method,
+      registered_by: req.user.name,
+      registration_date: new Date().toISOString().split('T')[0],
+      files: []
     });
   } catch (error) {
     console.error("POST /api/documents/:id/contestations error:", error);
@@ -499,13 +499,13 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
 
 // 💬 PUT actualizar contestación
 app.put("/api/contestations/:id", requireAuth, async (req, res) => {
-  const { presentationDate, authorityReceived, notes, contactMethod } = req.body;
+  const { date, authority, notes, contact_method } = req.body;
   try {
     await pool.query(
       `UPDATE contestations
        SET presentation_date=?, authority_received=?, notes=?, contact_method=?
        WHERE id=?`,
-      [presentationDate, authorityReceived, notes, contactMethod, req.params.id]
+      [date, authority, notes, contact_method, req.params.id]
     );
     res.json({ ok: true });
   } catch (error) {
