@@ -107,6 +107,152 @@ const getWelcomeEmailContent = (name, email, password, role = "Operator") => {
   };
 };
 
+// 🌐 Status Change Notification Email Template (Bilingual)
+const getStatusChangeEmailContent = (documentTitle, tramiteNumber, oldStatus, newStatus, changedBy, authority) => {
+  return {
+    subject: "📋 Documento Actualizado | 文档已更新 - Estado Cambió | 状态已更改",
+    html: `
+      <html>
+      <head><meta charset="UTF-8"></head>
+      <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
+
+          <!-- SPANISH -->
+          <div style="margin-bottom: 40px; padding-bottom: 30px; border-bottom: 2px solid #e0e0e0;">
+            <h2 style="color: #204070;">📋 Documento Actualizado</h2>
+            <p>El documento "<strong>${documentTitle}</strong>" (Trámite: ${tramiteNumber}) ha cambiado de estado.</p>
+
+            <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
+              <p style="margin: 5px 0;"><strong>📄 Documento:</strong> ${documentTitle}</p>
+              <p style="margin: 5px 0;"><strong>🔢 Trámite:</strong> ${tramiteNumber}</p>
+              <p style="margin: 5px 0;"><strong>❌ Estado Anterior:</strong> <span style="background: #ffe6e6; padding: 2px 6px; border-radius: 3px;">${oldStatus}</span></p>
+              <p style="margin: 5px 0;"><strong>✅ Nuevo Estado:</strong> <span style="background: #e6ffe6; padding: 2px 6px; border-radius: 3px;">${newStatus}</span></p>
+              <p style="margin: 5px 0;"><strong>👤 Cambio Realizado por:</strong> ${changedBy}</p>
+              <p style="margin: 5px 0;"><strong>🏢 Autoridad:</strong> ${authority}</p>
+            </div>
+          </div>
+
+          <!-- CHINESE -->
+          <div>
+            <h2 style="color: #204070;">📋 文档已更新</h2>
+            <p>文档"<strong>${documentTitle}</strong>"（程序：${tramiteNumber}）的状态已更改。</p>
+
+            <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
+              <p style="margin: 5px 0;"><strong>📄 文档：</strong> ${documentTitle}</p>
+              <p style="margin: 5px 0;"><strong>🔢 程序号：</strong> ${tramiteNumber}</p>
+              <p style="margin: 5px 0;"><strong>❌ 前一个状态：</strong> <span style="background: #ffe6e6; padding: 2px 6px; border-radius: 3px;">${oldStatus}</span></p>
+              <p style="margin: 5px 0;"><strong>✅ 新状态：</strong> <span style="background: #e6ffe6; padding: 2px 6px; border-radius: 3px;">${newStatus}</span></p>
+              <p style="margin: 5px 0;"><strong>👤 更改者：</strong> ${changedBy}</p>
+              <p style="margin: 5px 0;"><strong>🏢 权限：</strong> ${authority}</p>
+            </div>
+          </div>
+
+          <p style="color: #999; margin-top: 20px; font-size: 12px; border-top: 1px solid #e0e0e0; padding-top: 15px;">
+            Tax Control System | 税务控制系统
+          </p>
+        </div>
+      </body>
+      </html>
+    `
+  };
+};
+
+// 🌐 Activity Added Notification Email Template (Bilingual)
+const getActivityAddedEmailContent = (documentTitle, tramiteNumber, activityDescription, dueDate, priority, addedBy) => {
+  return {
+    subject: "✅ Actividad Agregada | 已添加活动 - Nueva Actividad | 新活动",
+    html: `
+      <html>
+      <head><meta charset="UTF-8"></head>
+      <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
+
+          <!-- SPANISH -->
+          <div style="margin-bottom: 40px; padding-bottom: 30px; border-bottom: 2px solid #e0e0e0;">
+            <h2 style="color: #204070;">✅ Actividad Agregada</h2>
+            <p>Se ha agregado una nueva actividad al documento "<strong>${documentTitle}</strong>" (Trámite: ${tramiteNumber}).</p>
+
+            <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
+              <p style="margin: 5px 0;"><strong>📄 Documento:</strong> ${documentTitle}</p>
+              <p style="margin: 5px 0;"><strong>📝 Actividad:</strong> ${activityDescription}</p>
+              <p style="margin: 5px 0;"><strong>📅 Fecha Límite:</strong> ${dueDate}</p>
+              <p style="margin: 5px 0;"><strong>⚡ Prioridad:</strong> <span style="background: ${priority === 'High' ? '#ffcccc' : priority === 'Medium' ? '#ffffcc' : '#ccffcc'}; padding: 2px 6px; border-radius: 3px;">${priority}</span></p>
+              <p style="margin: 5px 0;"><strong>👤 Agregada por:</strong> ${addedBy}</p>
+            </div>
+          </div>
+
+          <!-- CHINESE -->
+          <div>
+            <h2 style="color: #204070;">✅ 已添加活动</h2>
+            <p>已向文档"<strong>${documentTitle}</strong>"（程序：${tramiteNumber}）添加新活动。</p>
+
+            <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
+              <p style="margin: 5px 0;"><strong>📄 文档：</strong> ${documentTitle}</p>
+              <p style="margin: 5px 0;"><strong>📝 活动：</strong> ${activityDescription}</p>
+              <p style="margin: 5px 0;"><strong>📅 截止日期：</strong> ${dueDate}</p>
+              <p style="margin: 5px 0;"><strong>⚡ 优先级：</strong> <span style="background: ${priority === 'High' ? '#ffcccc' : priority === 'Medium' ? '#ffffcc' : '#ccffcc'}; padding: 2px 6px; border-radius: 3px;">${priority}</span></p>
+              <p style="margin: 5px 0;"><strong>👤 由以下人员添加：</strong> ${addedBy}</p>
+            </div>
+          </div>
+
+          <p style="color: #999; margin-top: 20px; font-size: 12px; border-top: 1px solid #e0e0e0; padding-top: 15px;">
+            Tax Control System | 税务控制系统
+          </p>
+        </div>
+      </body>
+      </html>
+    `
+  };
+};
+
+// 🌐 Contestation Added Notification Email Template (Bilingual)
+const getContestationAddedEmailContent = (documentTitle, tramiteNumber, notes, contactMethod, presentationDate, registeredBy) => {
+  return {
+    subject: "💬 Contestación Registrada | 已注册异议 - Nueva Contestación | 新异议",
+    html: `
+      <html>
+      <head><meta charset="UTF-8"></head>
+      <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
+
+          <!-- SPANISH -->
+          <div style="margin-bottom: 40px; padding-bottom: 30px; border-bottom: 2px solid #e0e0e0;">
+            <h2 style="color: #204070;">💬 Contestación Registrada</h2>
+            <p>Se ha registrado una nueva contestación en el documento "<strong>${documentTitle}</strong>" (Trámite: ${tramiteNumber}).</p>
+
+            <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
+              <p style="margin: 5px 0;"><strong>📄 Documento:</strong> ${documentTitle}</p>
+              <p style="margin: 5px 0;"><strong>📝 Notas:</strong> ${notes}</p>
+              <p style="margin: 5px 0;"><strong>📞 Método de Contacto:</strong> ${contactMethod}</p>
+              <p style="margin: 5px 0;"><strong>📅 Fecha de Presentación:</strong> ${presentationDate}</p>
+              <p style="margin: 5px 0;"><strong>👤 Registrada por:</strong> ${registeredBy}</p>
+            </div>
+          </div>
+
+          <!-- CHINESE -->
+          <div>
+            <h2 style="color: #204070;">💬 已注册异议</h2>
+            <p>已在文档"<strong>${documentTitle}</strong>"（程序：${tramiteNumber}）中注册新异议。</p>
+
+            <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
+              <p style="margin: 5px 0;"><strong>📄 文档：</strong> ${documentTitle}</p>
+              <p style="margin: 5px 0;"><strong>📝 备注：</strong> ${notes}</p>
+              <p style="margin: 5px 0;"><strong>📞 联系方式：</strong> ${contactMethod}</p>
+              <p style="margin: 5px 0;"><strong>📅 提交日期：</strong> ${presentationDate}</p>
+              <p style="margin: 5px 0;"><strong>👤 由以下人员注册：</strong> ${registeredBy}</p>
+            </div>
+          </div>
+
+          <p style="color: #999; margin-top: 20px; font-size: 12px; border-top: 1px solid #e0e0e0; padding-top: 15px;">
+            Tax Control System | 税务控制系统
+          </p>
+        </div>
+      </body>
+      </html>
+    `
+  };
+};
+
 // 4️⃣ Endpoint raíz (para healthcheck de Coolify)
 app.get("/", (_req, res) => {
   res.json({ status: "ok", message: "TaxControl-Api is running", version: "2.0" });
@@ -478,29 +624,8 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
     const oldStatus = oldDoc.status;
     const newStatus = d.status || 'Inicializado';
     if (oldStatus !== newStatus) {
-      const subject = `Documento Actualizado: ${d.title} - Estado Cambió a ${newStatus}`;
-      const htmlContent = `
-        <html>
-        <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
-          <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
-            <h2 style="color: #204070;">Documento Actualizado</h2>
-            <p>El documento "<strong>${d.title}</strong>" (Trámite: ${d.trarniteNumber})<br/>ha cambiado de estado.</p>
-            <p style="margin-top: 20px;">
-              <strong>Estado anterior:</strong> ${oldStatus}<br/>
-              <strong>Nuevo estado:</strong> ${newStatus}<br/>
-              <strong>Cambio realizado por:</strong> ${req.user.name}<br/>
-              <strong>Fecha:</strong> ${new Date().toLocaleString('es-ES')}
-            </p>
-            <p style="margin-top: 20px; color: #666; font-size: 14px;">
-              Autoridad: ${d.authority}<br/>
-              Departamento: ${d.department || 'N/A'}
-            </p>
-            <p style="color: #999; margin-top: 30px; font-size: 12px;">Tax Control System</p>
-          </div>
-        </body>
-        </html>
-      `;
-      await sendNotificationEmail(recipients, subject, htmlContent, id, 'status_change');
+      const emailTemplate = getStatusChangeEmailContent(d.title, d.trarniteNumber, oldStatus, newStatus, req.user.name, d.authority);
+      await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, id, 'status_change');
     }
     // Check for other field changes (modification)
     else if (
@@ -599,30 +724,10 @@ app.post("/api/activities", requireAuth, async (req, res) => {
     if (docRows.length > 0) {
       const doc = docRows[0];
       const recipients = await getDocumentRecipients(docId);
+      const formattedDueDate = dueDate ? new Date(dueDate).toLocaleDateString('es-ES') : 'N/A';
 
-      const subject = `Actividad Agregada: ${doc.title}`;
-      const htmlContent = `
-        <html>
-        <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
-          <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
-            <h2 style="color: #204070;">Actividad Agregada</h2>
-            <p>Se ha agregado una nueva actividad al documento "<strong>${doc.title}</strong>"<br/>(Trámite: ${doc.trarnite_number})</p>
-            <p style="margin-top: 20px;">
-              <strong>Actividad:</strong> ${description}<br/>
-              <strong>Descripción:</strong> ${subDescription || 'N/A'}<br/>
-              <strong>Fecha Límite:</strong> ${dueDate ? new Date(dueDate).toLocaleDateString('es-ES') : 'N/A'}<br/>
-              <strong>Prioridad:</strong> ${priority || 'Medium'}
-            </p>
-            <p style="margin-top: 20px;">
-              <strong>Agregada por:</strong> ${req.user.name}<br/>
-              <strong>Fecha:</strong> ${new Date().toLocaleString('es-ES')}
-            </p>
-            <p style="color: #999; margin-top: 30px; font-size: 12px;">Tax Control System</p>
-          </div>
-        </body>
-        </html>
-      `;
-      await sendNotificationEmail(recipients, subject, htmlContent, docId, 'activity_added');
+      const emailTemplate = getActivityAddedEmailContent(doc.title, doc.trarnite_number, description, formattedDueDate, priority || 'Medium', req.user.name);
+      await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, docId, 'activity_added');
     }
 
     res.status(201).json({ id, docId, description, subDescription, dueDate, priority: priority || 'Medium', status: 'Pending' });
@@ -744,30 +849,10 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
     if (docRows.length > 0) {
       const doc = docRows[0];
       const recipients = await getDocumentRecipients(documentId);
+      const formattedDate = new Date(date).toLocaleDateString('es-ES');
 
-      const subject = `Contestación Registrada: ${doc.title}`;
-      const htmlContent = `
-        <html>
-        <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
-          <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
-            <h2 style="color: #204070;">Contestación Registrada</h2>
-            <p>Se ha registrado una nueva contestación en el documento "<strong>${doc.title}</strong>"<br/>(Trámite: ${doc.trarnite_number})</p>
-            <p style="margin-top: 20px;">
-              <strong>Notas:</strong> ${notes || 'N/A'}<br/>
-              <strong>Método de Contacto:</strong> ${contact_method || 'N/A'}<br/>
-              <strong>Fecha de Presentación:</strong> ${new Date(date).toLocaleDateString('es-ES')}<br/>
-              <strong>Autoridad:</strong> ${authority}
-            </p>
-            <p style="margin-top: 20px;">
-              <strong>Registrada por:</strong> ${req.user.name}<br/>
-              <strong>Fecha de Registro:</strong> ${new Date().toLocaleString('es-ES')}
-            </p>
-            <p style="color: #999; margin-top: 30px; font-size: 12px;">Tax Control System</p>
-          </div>
-        </body>
-        </html>
-      `;
-      await sendNotificationEmail(recipients, subject, htmlContent, documentId, 'contestation_added');
+      const emailTemplate = getContestationAddedEmailContent(doc.title, doc.trarnite_number, notes || 'N/A', contact_method || 'N/A', formattedDate, req.user.name);
+      await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, documentId, 'contestation_added');
     }
 
     res.status(201).json({
@@ -1007,14 +1092,18 @@ const sendNotificationEmail = async (users, subject, htmlContent, documentId, no
   }
 };
 
-// 📧 Generar HTML para notificación de resumen diario
+// 📧 Generar HTML para notificación de resumen diario (Bilingüe)
 const generateDailyReminderHTML = (overdueDocs, upcomingDocs) => {
   let html = `
     <html>
+    <head><meta charset="UTF-8"></head>
     <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
       <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
-        <h2 style="color: #204070;">Resumen Diario de Documentos</h2>
-        <p>A continuación se muestra un resumen de los documentos que requieren atención:</p>
+
+        <!-- SPANISH SECTION -->
+        <div style="margin-bottom: 40px; padding-bottom: 30px; border-bottom: 2px solid #e0e0e0;">
+          <h2 style="color: #204070;">📋 Resumen Diario de Documentos</h2>
+          <p>A continuación se muestra un resumen de los documentos que requieren atención:</p>
   `;
 
   if (overdueDocs && overdueDocs.length > 0) {
@@ -1024,14 +1113,7 @@ const generateDailyReminderHTML = (overdueDocs, upcomingDocs) => {
 
     for (const doc of overdueDocs) {
       const daysOverdue = Math.floor((Date.now() - new Date(doc.due_date)) / (1000 * 60 * 60 * 24));
-      html += `
-        <tr style="border: 1px solid #ddd;">
-          <td style="padding: 10px;">${doc.title}</td>
-          <td style="padding: 10px;">${doc.trarnite_number}</td>
-          <td style="padding: 10px;">${new Date(doc.due_date).toLocaleDateString('es-ES')}</td>
-          <td style="padding: 10px; color: #d9534f;"><strong>${daysOverdue}</strong></td>
-        </tr>
-      `;
+      html += `<tr style="border: 1px solid #ddd;"><td style="padding: 10px;">${doc.title}</td><td style="padding: 10px;">${doc.trarnite_number}</td><td style="padding: 10px;">${new Date(doc.due_date).toLocaleDateString('es-ES')}</td><td style="padding: 10px; color: #d9534f;"><strong>${daysOverdue}</strong></td></tr>`;
     }
     html += '</table>';
   }
@@ -1043,21 +1125,52 @@ const generateDailyReminderHTML = (overdueDocs, upcomingDocs) => {
 
     for (const doc of upcomingDocs) {
       const daysUntilDue = Math.floor((new Date(doc.due_date) - Date.now()) / (1000 * 60 * 60 * 24));
-      html += `
-        <tr style="border: 1px solid #ddd;">
-          <td style="padding: 10px;">${doc.title}</td>
-          <td style="padding: 10px;">${doc.trarnite_number}</td>
-          <td style="padding: 10px;">${new Date(doc.due_date).toLocaleDateString('es-ES')}</td>
-          <td style="padding: 10px; color: #f0ad4e;"><strong>${daysUntilDue}</strong></td>
-        </tr>
-      `;
+      html += `<tr style="border: 1px solid #ddd;"><td style="padding: 10px;">${doc.title}</td><td style="padding: 10px;">${doc.trarnite_number}</td><td style="padding: 10px;">${new Date(doc.due_date).toLocaleDateString('es-ES')}</td><td style="padding: 10px; color: #f0ad4e;"><strong>${daysUntilDue}</strong></td></tr>`;
     }
     html += '</table>';
   }
 
   html += `
-      <p style="color: #666; margin-top: 20px; font-size: 14px;">Por favor, revise estos documentos y tome las acciones necesarias.</p>
-      <p style="color: #999; margin-top: 30px; font-size: 12px;">Tax Control System</p>
+          <p style="color: #666; margin-top: 20px; font-size: 14px;">Por favor, revise estos documentos y tome las acciones necesarias.</p>
+        </div>
+
+        <!-- CHINESE SECTION -->
+        <div>
+          <h2 style="color: #204070;">📋 每日文档摘要</h2>
+          <p>以下是需要您注意的文档摘要：</p>
+  `;
+
+  if (overdueDocs && overdueDocs.length > 0) {
+    html += `<h3 style="color: #d9534f;">逾期文档 (${overdueDocs.length})</h3>`;
+    html += '<table style="border-collapse: collapse; width: 100%; margin-bottom: 20px;">';
+    html += '<tr style="background-color: #ffcccc; border: 1px solid #ddd;"><th style="padding: 10px; text-align: left;">标题</th><th style="padding: 10px; text-align: left;">程序</th><th style="padding: 10px; text-align: left;">到期日期</th><th style="padding: 10px; text-align: left;">天数</th></tr>';
+
+    for (const doc of overdueDocs) {
+      const daysOverdue = Math.floor((Date.now() - new Date(doc.due_date)) / (1000 * 60 * 60 * 24));
+      html += `<tr style="border: 1px solid #ddd;"><td style="padding: 10px;">${doc.title}</td><td style="padding: 10px;">${doc.trarnite_number}</td><td style="padding: 10px;">${new Date(doc.due_date).toLocaleDateString('zh-CN')}</td><td style="padding: 10px; color: #d9534f;"><strong>${daysOverdue}</strong></td></tr>`;
+    }
+    html += '</table>';
+  }
+
+  if (upcomingDocs && upcomingDocs.length > 0) {
+    html += `<h3 style="color: #f0ad4e;">即将到期 (接下来 7 天) (${upcomingDocs.length})</h3>`;
+    html += '<table style="border-collapse: collapse; width: 100%; margin-bottom: 20px;">';
+    html += '<tr style="background-color: #ffffcc; border: 1px solid #ddd;"><th style="padding: 10px; text-align: left;">标题</th><th style="padding: 10px; text-align: left;">程序</th><th style="padding: 10px; text-align: left;">到期日期</th><th style="padding: 10px; text-align: left;">天数</th></tr>';
+
+    for (const doc of upcomingDocs) {
+      const daysUntilDue = Math.floor((new Date(doc.due_date) - Date.now()) / (1000 * 60 * 60 * 24));
+      html += `<tr style="border: 1px solid #ddd;"><td style="padding: 10px;">${doc.title}</td><td style="padding: 10px;">${doc.trarnite_number}</td><td style="padding: 10px;">${new Date(doc.due_date).toLocaleDateString('zh-CN')}</td><td style="padding: 10px; color: #f0ad4e;"><strong>${daysUntilDue}</strong></td></tr>`;
+    }
+    html += '</table>';
+  }
+
+  html += `
+          <p style="color: #666; margin-top: 20px; font-size: 14px;">请审查这些文件并采取必要的行动。</p>
+        </div>
+
+        <p style="color: #999; margin-top: 20px; font-size: 12px; border-top: 1px solid #e0e0e0; padding-top: 15px;">
+          Tax Control System | 税务控制系统
+        </p>
       </div>
     </body>
     </html>
