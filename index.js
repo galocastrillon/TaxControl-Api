@@ -33,72 +33,72 @@ const pool = mysql.createPool({
   connectionLimit: 10,
 });
 
-// 🌐 Función helper para detectar idioma basado en email o usuario
-const detectLanguage = (email) => {
-  return email.toLowerCase().includes('cn') || email.toLowerCase().includes('zh') ? 'zh' : 'es';
-};
-
-// 🌐 Email Template Helper - Multi-language Support
-const getWelcomeEmailContent = (name, email, password, role = "Operator", lang = "es") => {
-  const templates = {
-    es: {
-      title: "👥 Bienvenido a Tax Control",
-      greeting: `¡Hola <strong>${name}</strong>!`,
-      message: "Tu cuenta ha sido creada exitosamente en Tax Control. A continuación encontrarás tus credenciales de acceso:",
-      emailLabel: "📧 Email/Usuario:",
-      passwordLabel: "🔐 Contraseña:",
-      roleLabel: "👤 Rol:",
-      loginButton: "Acceder a Tax Control",
-      warning: "<strong>⚠️ IMPORTANTE:</strong> Por seguridad, te recomendamos cambiar tu contraseña en el primer acceso a tu perfil.",
-      footer: "Tax Control System<br/>Sistema de Control Tributario",
-      subject: "👥 Bienvenido a Tax Control - Tus Credenciales de Acceso"
-    },
-    zh: {
-      title: "👥 欢迎来到 Tax Control",
-      greeting: `你好 <strong>${name}</strong>！`,
-      message: "您的账户已在 Tax Control 中成功创建。以下是您的访问凭证：",
-      emailLabel: "📧 电子邮件/用户名：",
-      passwordLabel: "🔐 密码：",
-      roleLabel: "👤 角色：",
-      loginButton: "登录 Tax Control",
-      warning: "<strong>⚠️ 重要提示：</strong>为了安全起见，我们建议您在首次登录时更改密码。",
-      footer: "Tax Control 系统<br/>税务控制系统",
-      subject: "👥 欢迎来到 Tax Control - 您的访问凭证"
-    }
-  };
-
-  const t = templates[lang] || templates.es;
+// 🌐 Email Template Helper - Multi-language Support (Spanish + Simplified Chinese)
+const getWelcomeEmailContent = (name, email, password, role = "Operator") => {
   const roleDisplay = role || "Operator";
 
   return {
-    subject: t.subject,
+    subject: "👥 Bienvenido a Tax Control | 欢迎来到 Tax Control - Tus Credenciales de Acceso | 您的访问凭证",
     html: `
       <html>
+      <head>
+        <meta charset="UTF-8">
+      </head>
       <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
         <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
-          <h2 style="color: #204070;">${t.title}</h2>
-          <p>${t.greeting}</p>
-          <p>${t.message}</p>
 
-          <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
-            <p style="margin: 5px 0;"><strong>${t.emailLabel}</strong> ${email}</p>
-            <p style="margin: 5px 0;"><strong>${t.passwordLabel}</strong> <code style="background-color: #f0f0f0; padding: 2px 6px; border-radius: 3px;">${password}</code></p>
-            <p style="margin: 5px 0;"><strong>${t.roleLabel}</strong> ${roleDisplay}</p>
+          <!-- SPANISH VERSION -->
+          <div style="margin-bottom: 40px; padding-bottom: 30px; border-bottom: 2px solid #e0e0e0;">
+            <h2 style="color: #204070;">👥 Bienvenido a Tax Control</h2>
+            <p>¡Hola <strong>${name}</strong>!</p>
+            <p>Tu cuenta ha sido creada exitosamente en Tax Control. A continuación encontrarás tus credenciales de acceso:</p>
+
+            <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
+              <p style="margin: 5px 0;"><strong>📧 Email/Usuario:</strong> ${email}</p>
+              <p style="margin: 5px 0;"><strong>🔐 Contraseña:</strong> <code style="background-color: #f0f0f0; padding: 2px 6px; border-radius: 3px;">${password}</code></p>
+              <p style="margin: 5px 0;"><strong>👤 Rol:</strong> ${roleDisplay}</p>
+            </div>
+
+            <p style="margin-top: 20px;">
+              <a href="http://taxcontrolapp.192.168.60.109.sslip.io/#/login"
+                 style="background-color: #204070; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
+                Acceder a Tax Control
+              </a>
+            </p>
+
+            <p style="color: #666; font-size: 12px; margin-top: 20px;">
+              <strong>⚠️ IMPORTANTE:</strong> Por seguridad, te recomendamos cambiar tu contraseña en el primer acceso a tu perfil.
+            </p>
           </div>
 
-          <p style="margin-top: 20px;">
-            <a href="http://taxcontrolapp.192.168.60.109.sslip.io/#/login"
-               style="background-color: #204070; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
-              ${t.loginButton}
-            </a>
-          </p>
+          <!-- CHINESE (SIMPLIFIED) VERSION -->
+          <div>
+            <h2 style="color: #204070;">👥 欢迎来到 Tax Control</h2>
+            <p>你好 <strong>${name}</strong>！</p>
+            <p>您的账户已在 Tax Control 中成功创建。以下是您的访问凭证：</p>
 
-          <p style="color: #666; font-size: 12px; margin-top: 30px;">
-            ${t.warning}
-          </p>
+            <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
+              <p style="margin: 5px 0;"><strong>📧 电子邮件/用户名：</strong> ${email}</p>
+              <p style="margin: 5px 0;"><strong>🔐 密码：</strong> <code style="background-color: #f0f0f0; padding: 2px 6px; border-radius: 3px;">${password}</code></p>
+              <p style="margin: 5px 0;"><strong>👤 角色：</strong> ${roleDisplay}</p>
+            </div>
 
-          <p style="color: #999; margin-top: 20px; font-size: 12px;">
-            ${t.footer}
+            <p style="margin-top: 20px;">
+              <a href="http://taxcontrolapp.192.168.60.109.sslip.io/#/login"
+                 style="background-color: #204070; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
+                登录 Tax Control
+              </a>
+            </p>
+
+            <p style="color: #666; font-size: 12px; margin-top: 20px;">
+              <strong>⚠️ 重要提示：</strong>为了安全起见，我们建议您在首次登录时更改密码。
+            </p>
+          </div>
+
+          <!-- FOOTER -->
+          <p style="color: #999; margin-top: 30px; font-size: 12px; border-top: 1px solid #e0e0e0; padding-top: 20px;">
+            Tax Control System | 税务控制系统<br/>
+            Sistema de Control Tributario
           </p>
         </div>
       </body>
@@ -225,9 +225,8 @@ app.post("/api/users", requireAuth, async (req, res) => {
         const transporter = await getEmailTransporter();
         const config = await getSmtpConfig();
 
-        // Detectar idioma automáticamente
-        const lang = detectLanguage(email);
-        const emailTemplate = getWelcomeEmailContent(name, email, password, role, lang);
+        // Get email template with both Spanish and Simplified Chinese
+        const emailTemplate = getWelcomeEmailContent(name, email, password, role);
 
         await transporter.sendMail({
           from: `"${config.from_name}" <${config.from_email}>`,
@@ -236,7 +235,7 @@ app.post("/api/users", requireAuth, async (req, res) => {
           html: emailTemplate.html
         });
 
-        console.log(`Welcome email sent to ${email} for new user ${id} (Language: ${lang === 'zh' ? 'Simplified Chinese' : 'Spanish'})`);
+        console.log(`Welcome email sent to ${email} for new user ${id} (Bilingual: Spanish + Simplified Chinese)`);
       } catch (error) {
         console.error(`Error sending welcome email to ${email}:`, error.message);
       }
