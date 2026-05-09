@@ -144,6 +144,61 @@ app.post("/api/users", requireAuth, async (req, res) => {
       "INSERT INTO users (id, name, email, password_hash, role) VALUES (?, ?, ?, ?, ?)",
       [id, name, email, hash, role || "Operator"]
     );
+
+    // 📧 Enviar email con credenciales (asincrónico, no bloquea la respuesta)
+    (async () => {
+      try {
+        const transporter = await getEmailTransporter();
+        const config = await getSmtpConfig();
+
+        const roleDisplay = role || "Operator";
+        const htmlContent = `
+          <html>
+          <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+            <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
+              <h2 style="color: #204070;">👥 Bienvenido a Tax Control</h2>
+              <p>¡Hola <strong>${name}</strong>!</p>
+              <p>Tu cuenta ha sido creada exitosamente en Tax Control. A continuación encontrarás tus credenciales de acceso:</p>
+
+              <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
+                <p style="margin: 5px 0;"><strong>📧 Email/Usuario:</strong> ${email}</p>
+                <p style="margin: 5px 0;"><strong>🔐 Contraseña:</strong> <code style="background-color: #f0f0f0; padding: 2px 6px; border-radius: 3px;">${password}</code></p>
+                <p style="margin: 5px 0;"><strong>👤 Rol:</strong> ${roleDisplay}</p>
+              </div>
+
+              <p style="margin-top: 20px;">
+                <a href="http://taxcontrolapp.192.168.60.109.sslip.io/#/login"
+                   style="background-color: #204070; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
+                  Acceder a Tax Control
+                </a>
+              </p>
+
+              <p style="color: #666; font-size: 12px; margin-top: 30px;">
+                <strong>⚠️ IMPORTANTE:</strong> Por seguridad, te recomendamos cambiar tu contraseña en el primer acceso a tu perfil.
+              </p>
+
+              <p style="color: #999; margin-top: 20px; font-size: 12px;">
+                Tax Control System<br/>
+                Sistema de Control Tributario
+              </p>
+            </div>
+          </body>
+          </html>
+        `;
+
+        await transporter.sendMail({
+          from: `"${config.from_name}" <${config.from_email}>`,
+          to: email,
+          subject: `👥 Bienvenido a Tax Control - Tus Credenciales de Acceso`,
+          html: htmlContent
+        });
+
+        console.log(`Welcome email sent to ${email} for new user ${id}`);
+      } catch (error) {
+        console.error(`Error sending welcome email to ${email}:`, error.message);
+      }
+    })();
+
     res.status(201).json({ id, name, email, role: role || "Operator" });
   } catch (error) {
     if (error.code === "ER_DUP_ENTRY")
