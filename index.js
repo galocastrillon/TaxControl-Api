@@ -208,8 +208,8 @@ app.get("/api/documents", requireAuth, async (req, res) => {
 
     // Filtro por authority si se proporciona
     if (authority && authority !== 'Todas') {
-      query += ` AND d.authority LIKE ?`;
-      params.push(`%${authority}%`);
+      query += ` AND UPPER(TRIM(d.authority)) = UPPER(TRIM(?))`;
+      params.push(authority);
     }
 
     query += ` ORDER BY d.created_at DESC`;
