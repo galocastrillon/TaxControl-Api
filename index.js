@@ -336,6 +336,30 @@ app.post("/api/auth/logout", async (req, res) => {
 });
 
 // 9️⃣ Usuario actual
+app.post("/api/auth/change-password", requireAuth, async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  if (!currentPassword || !newPassword)
+    return res.status(400).json({ error: "Faltan campos requeridos" });
+  if (newPassword.length < 6)
+    return res.status(400).json({ error: "La nueva contraseña debe tener al menos 6 caracteres" });
+  if (currentPassword === newPassword)
+    return res.status(400).json({ error: "La nueva contraseña debe ser diferente a la actual" });
+  try {
+    const userId = req.user.user_id;
+    const [users] = await pool.query("SELECT * FROM users WHERE id = ?", [userId]);
+    if (users.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
+    const user = users[0];
+    const currentHash = crypto.createHash("sha256").update(userId + currentPassword).digest("hex");
+    if (currentHash !== user.password_hash)
+      return res.status(401).json({ error: "La contraseña actual es incorrecta" });
+    const newHash = crypto.createHash("sha256").update(userId + newPassword).digest("hex");
+    await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [newHash, userId]);
+    res.json({ message: "Contraseña actualizada exitosamente" });
+  } catch (error) {
+    console.error("[change-password] Error:", error);
+    res.status(500).json({ error: "Error al cambiar la contraseña" });
+  }
+});
 app.get("/api/auth/me", requireAuth, (req, res) => {
   res.json({ user: req.user });
 });
@@ -918,7 +942,7 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
                 }
               },
               {
-                text: `Analiza este documento y responde SOLO con JSON válido sin markdown:\n{"authority":"","department":"","company":"","notificationDate":"YYYY-MM-DD","emissionDate":"YYYY-MM-DD","daysLimit":10,"dayType":"Días hábiles","trarniteNumber":"","title":"","summaryEs":"resumen breve en español","summaryCn":"简短摘要","activities":[""]}`
+                text: `Analiza este documento y responde SOLO con JSON válido sin markdown. EXTRAE: trarniteNumber=número interno de trámite/expediente (ej: "Trámite No."); documentNumber=número oficial del documento emitido (ej: "Resolución No.", "Oficio No.", "Notificación No.", "Auto No.", "Providencia No.") — búscalo en encabezado, pie y cuerpo. Si solo hay un número ponlo en trarniteNumber y deja documentNumber vacío:\n{"authority":"","department":"","company":"","notificationDate":"YYYY-MM-DD","emissionDate":"YYYY-MM-DD","daysLimit":10,"dayType":"Días hábiles","trarniteNumber":"","documentNumber":"","title":"","summaryEs":"resumen breve en español","summaryCn":"简短摘要","activities":[""]}`
               }
             ]
           }],
