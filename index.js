@@ -1397,6 +1397,77 @@ app.post("/api/smtp-config", requireAuth, async (req, res) => {
 });
 
 // 🔍 Listar modelos Gemini disponibles
+// 📧 Notificación de nuevo documento
+const getNewDocumentEmailContent = (doc) => ({
+  subject: `Nuevo Trámite | 新案件 - ${doc.trarnite_number}`,
+  html: `
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:8px;padding:20px;">
+      <div style="margin-bottom:30px;padding-bottom:20px;border-bottom:2px solid #e0e0e0;">
+        <h2 style="color:#204070;">📄 Nuevo Trámite Registrado</h2>
+        <div style="background:#f9f9f9;border-left:4px solid #204070;padding:15px;margin:15px 0;border-radius:4px;">
+          <p style="margin:5px 0;"><strong>📋 Título:</strong> ${doc.title}</p>
+          <p style="margin:5px 0;"><strong>🔢 Trámite #:</strong> ${doc.trarnite_number}</p>
+          <p style="margin:5px 0;"><strong>🏢 Autoridad:</strong> ${doc.authority}</p>
+          <p style="margin:5px 0;"><strong>📅 Fecha Notificación:</strong> ${doc.notification_date}</p>
+          <p style="margin:5px 0;"><strong>⏰ Vencimiento:</strong> ${doc.due_date}</p>
+          <p style="margin:5px 0;"><strong>📊 Estado:</strong> ${doc.status}</p>
+        </div>
+        <a href="http://taxcontrolapp.192.168.60.109.sslip.io/#/documents/${doc.id}"
+           style="background:#204070;color:white;padding:12px 24px;text-decoration:none;border-radius:4px;display:inline-block;margin-top:10px;">
+          Ver Documento
+        </a>
+      </div>
+      <div>
+        <h2 style="color:#204070;">📄 新案件已登记</h2>
+        <div style="background:#f9f9f9;border-left:4px solid #204070;padding:15px;margin:15px 0;border-radius:4px;">
+          <p style="margin:5px 0;"><strong>📋 标题：</strong> ${doc.title}</p>
+          <p style="margin:5px 0;"><strong>🔢 案件编号：</strong> ${doc.trarnite_number}</p>
+          <p style="margin:5px 0;"><strong>🏢 机构：</strong> ${doc.authority}</p>
+          <p style="margin:5px 0;"><strong>📅 通知日期：</strong> ${doc.notification_date}</p>
+          <p style="margin:5px 0;"><strong>⏰ 到期日期：</strong> ${doc.due_date}</p>
+        </div>
+        <a href="http://taxcontrolapp.192.168.60.109.sslip.io/#/documents/${doc.id}"
+           style="background:#204070;color:white;padding:12px 24px;text-decoration:none;border-radius:4px;display:inline-block;margin-top:10px;">
+          查看文件
+        </a>
+      </div>
+    </div>`
+});
+
+app.post("/api/notifications/new-document", requireAuth, async (req, res) => {
+  const { docId } = req.body;
+  if (!docId) return res.status(400).json({ error: "docId requerido" });
+  try {
+    const [docs] = await pool.query("SELECT * FROM documents WHERE id = ?", [docId]);
+    if (docs.length === 0) return res.status(404).json({ error: "Documento no encontrado" });
+    const doc = docs[0];
+    const [users] = await pool.query(
+      'SELECT id, name, email FROM users WHERE email IS NOT NULL AND email != "" AND (role = "Admin" OR role = "Operator")'
+    );
+    const transporter = await getEmailTransporter();
+    const config = await getSmtpConfig();
+    const emailContent = getNewDocumentEmailContent(doc);
+    let sent = 0;
+    for (const user of users) {
+      try {
+        await transporter.sendMail({
+          from: `"${config.from_name}" <${config.from_email}>`,
+          to: user.email,
+          subject: emailContent.subject,
+          html: emailContent.html
+        });
+        sent++;
+      } catch (err) {
+        console.error(`[new-doc notification] Error enviando a ${user.email}:`, err.message);
+      }
+    }
+    console.log(`[new-doc notification] Enviado a ${sent}/${users.length} usuarios para doc ${docId}`);
+    res.json({ message: `Notificaciones enviadas`, sent });
+  } catch (error) {
+    console.error("[new-doc notification] Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
 app.get("/api/list-models", async (req, res) => {
   const r = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models?key=${process.env.GEMINI_API_KEY}`
