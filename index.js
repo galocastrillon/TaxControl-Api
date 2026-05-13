@@ -1001,26 +1001,35 @@ const getSmtpConfig = async () => {
     if (rows.length > 0) {
       return rows[0];
     }
-    // Fallback si no existe configuración
+    // Si no existe, crear un registro vacío (será completado por el admin)
+    try {
+      await pool.query(
+        `INSERT INTO smtp_config (id, host, port, user, password, from_email, from_name, use_ssl)
+         VALUES (1, '', 465, '', '', '', 'Tax Control ECSA', 0)`
+      );
+      console.log("Created empty SMTP config record. Admin must configure it.");
+    } catch (insertError) {
+      console.error("Could not create SMTP config record:", insertError);
+    }
     return {
-      host: "owa1.corriente.com.ec",
+      host: "",
       port: 465,
-      user: "ecsa\\monitoreo",
+      user: "",
       password: "",
-      from_email: "monitoreo@corriente.com.ec",
+      from_email: "",
       from_name: "Tax Control ECSA",
-      use_ssl: true
+      use_ssl: false
     };
   } catch (error) {
     console.error("Error getting SMTP config:", error);
     return {
-      host: "owa1.corriente.com.ec",
+      host: "",
       port: 465,
-      user: "ecsa\\monitoreo",
+      user: "",
       password: "",
-      from_email: "monitoreo@corriente.com.ec",
+      from_email: "",
       from_name: "Tax Control ECSA",
-      use_ssl: true
+      use_ssl: false
     };
   }
 };
@@ -1030,8 +1039,13 @@ const getEmailTransporter = async () => {
   try {
     const config = await getSmtpConfig();
 
-    if (!config.password) {
-      throw new Error("SMTP password is not configured. Please set it in the Admin panel.");
+    if (!config.password || !config.host || !config.user || !config.from_email) {
+      const missing = [];
+      if (!config.host) missing.push("SMTP Host");
+      if (!config.user) missing.push("SMTP User");
+      if (!config.password) missing.push("SMTP Password");
+      if (!config.from_email) missing.push("From Email");
+      throw new Error(`SMTP not fully configured. Missing: ${missing.join(", ")}. Please configure it in the Admin panel (Settings > SMTP Configuration).`);
     }
 
     const port = config.port || 465;
@@ -1378,15 +1392,25 @@ app.post("/api/smtp-config", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // Si no se proporciona contraseña, mantener la anterior
-    let query, params;
-    if (password) {
-      query = `UPDATE smtp_config SET host=?, port=?, user=?, password=?, from_email=?, from_name=?, use_ssl=? WHERE id=1`;
-      params = [host, port, user, password, from_email, from_name, use_ssl ? 1 : 0];
-    } else {
-      query = `UPDATE smtp_config SET host=?, port=?, user=?, from_email=?, from_name=?, use_ssl=? WHERE id=1`;
-      params = [host, port, user, from_email, from_name, use_ssl ? 1 : 0];
+    if (!password) {
+      return res.status(400).json({ error: "Password is required for SMTP configuration" });
     }
+
+    // Use INSERT ... ON DUPLICATE KEY UPDATE to create or update the config
+    const query = `
+      INSERT INTO smtp_config (id, host, port, user, password, from_email, from_name, use_ssl)
+      VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        host=VALUES(host),
+        port=VALUES(port),
+        user=VALUES(user),
+        password=VALUES(password),
+        from_email=VALUES(from_email),
+        from_name=VALUES(from_name),
+        use_ssl=VALUES(use_ssl),
+        updated_at=NOW()
+    `;
+    const params = [host, port, user, password, from_email, from_name, use_ssl ? 1 : 0];
 
     await pool.query(query, params);
     res.json({ ok: true, message: "SMTP configuration saved successfully" });
@@ -1432,6 +1456,75 @@ const getNewDocumentEmailContent = (doc) => ({
         </a>
       </div>
     </div>`
+});
+
+// 🧪 Prueba de configuración SMTP
+app.post("/api/smtp-config/test", requireAuth, async (req, res) => {
+  try {
+    const config = await getSmtpConfig();
+
+    // Validar que la configuración esté completa
+    if (!config.host || !config.user || !config.password || !config.from_email) {
+      const missing = [];
+      if (!config.host) missing.push("SMTP Host");
+      if (!config.user) missing.push("SMTP User");
+      if (!config.password) missing.push("SMTP Password");
+      if (!config.from_email) missing.push("From Email");
+      return res.status(400).json({
+        success: false,
+        error: `Configuración SMTP incompleta. Falta: ${missing.join(", ")}`
+      });
+    }
+
+    // Intentar crear transporter y enviar correo de prueba
+    const transporter = await getEmailTransporter();
+    const testEmail = req.user.email || req.body.test_email;
+
+    if (!testEmail) {
+      return res.status(400).json({
+        success: false,
+        error: "No email provided for test"
+      });
+    }
+
+    const testResult = await transporter.sendMail({
+      from: `"${config.from_name}" <${config.from_email}>`,
+      to: testEmail,
+      subject: "🧪 Tax Control SMTP Test Email",
+      html: `
+        <html>
+        <head><meta charset="UTF-8"></head>
+        <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+          <div style="max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 20px;">
+            <h2 style="color: #204070;">✅ Tax Control SMTP Configuration Test</h2>
+            <p>This is a test email to verify your SMTP configuration is working correctly.</p>
+            <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
+              <p><strong>✓ SMTP Host:</strong> ${config.host}</p>
+              <p><strong>✓ Port:</strong> ${config.port}</p>
+              <p><strong>✓ User:</strong> ${config.user}</p>
+              <p><strong>✓ From Email:</strong> ${config.from_email}</p>
+              <p><strong>✓ SSL/TLS:</strong> ${config.use_ssl ? 'Enabled' : 'Disabled'}</p>
+            </div>
+            <p style="color: #666;">If you received this email, your SMTP configuration is working correctly!</p>
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">Tax Control System</p>
+          </div>
+        </body>
+        </html>
+      `
+    });
+
+    res.json({
+      success: true,
+      message: "Test email sent successfully",
+      messageId: testResult.messageId
+    });
+  } catch (error) {
+    console.error("SMTP test error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 app.post("/api/notifications/new-document", requireAuth, async (req, res) => {
