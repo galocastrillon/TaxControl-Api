@@ -455,7 +455,10 @@ app.delete("/api/users/:id", requireAuth, async (req, res) => {
 // 📄 GET todos los documentos (con filtros opcionales)
 app.get("/api/documents", requireAuth, async (req, res) => {
   try {
-    const { company_id, authority } = req.query;
+    const { company_id, authority, page = 1, limit = 20 } = req.query;
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const pageSize = Math.min(100, Math.max(5, parseInt(limit) || 20));
+    const offset = (pageNum - 1) * pageSize;
 
     let query = `
       SELECT d.*, c.name as company_name, u.name as created_by_name, u2.name as last_edited_by_name
@@ -465,23 +468,33 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       LEFT JOIN users u2 ON d.last_edited_by = u2.id
       WHERE 1=1
     `;
+    let countQuery = `SELECT COUNT(*) as total FROM documents d WHERE 1=1`;
     const params = [];
+    const countParams = [];
 
     // Filtro por company_id si se proporciona
     if (company_id && company_id !== 'Todas') {
       query += ` AND d.company_id = ?`;
+      countQuery += ` AND d.company_id = ?`;
       params.push(company_id);
+      countParams.push(company_id);
     }
 
     // Filtro por authority si se proporciona
     if (authority && authority !== 'Todas') {
       query += ` AND UPPER(TRIM(d.authority)) = UPPER(TRIM(?))`;
+      countQuery += ` AND UPPER(TRIM(d.authority)) = UPPER(TRIM(?))`;
       params.push(authority);
+      countParams.push(authority);
     }
 
-    query += ` ORDER BY d.created_at DESC`;
+    query += ` ORDER BY d.created_at DESC LIMIT ? OFFSET ?`;
+    params.push(pageSize, offset);
 
     const [rows] = await pool.query(query, params);
+    const [countRows] = await pool.query(countQuery, countParams);
+    const total = countRows[0]?.total || 0;
+
     const docs = rows.map(d => ({
       id: d.id,
       title: d.title,
@@ -505,36 +518,84 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       lastEditedAt: d.last_edited_at?.toISOString().split('T')[0],
       contestations: []
     }));
-    res.json(docs);
+
+    res.json({
+      data: docs,
+      pagination: {
+        page: pageNum,
+        limit: pageSize,
+        total: total,
+        totalPages: Math.ceil(total / pageSize)
+      }
+    });
   } catch (error) {
     console.error("GET /api/documents error:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// 📄 GET un documento por ID
+// 📄 GET un documento por ID (optimized with parallel queries)
 app.get("/api/documents/:id", requireAuth, async (req, res) => {
   try {
-    const [rows] = await pool.query(`
-      SELECT d.*, c.name as company_name, u.name as created_by_name, u2.name as last_edited_by_name
-      FROM documents d
-      LEFT JOIN companies c ON d.company_id = c.id
-      LEFT JOIN users u ON d.created_by = u.id
-      LEFT JOIN users u2 ON d.last_edited_by = u2.id
-      WHERE d.id = ?
-    `, [req.params.id]);
-    if (rows.length === 0)
+    const docId = req.params.id;
+
+    // 🚀 Ejecutar 3 queries en paralelo en lugar de secuencial
+    const [docRows, contestationRows, attachmentRows, activityRows] = await Promise.all([
+      pool.query(`
+        SELECT d.*, c.name as company_name, u.name as created_by_name, u2.name as last_edited_by_name
+        FROM documents d
+        LEFT JOIN companies c ON d.company_id = c.id
+        LEFT JOIN users u ON d.created_by = u.id
+        LEFT JOIN users u2 ON d.last_edited_by = u2.id
+        WHERE d.id = ?
+      `, [docId]),
+      pool.query(`
+        SELECT c.*, u.name as registered_by_name
+        FROM contestations c
+        LEFT JOIN users u ON c.registered_by = u.id
+        WHERE c.document_id = ?
+      `, [docId]),
+      pool.query(`
+        SELECT * FROM document_attachments
+        WHERE document_id = ?
+        LIMIT 100
+      `, [docId]),
+      pool.query(`
+        SELECT * FROM activities
+        WHERE document_id = ?
+        ORDER BY due_date DESC
+        LIMIT 50
+      `, [docId])
+    ]);
+
+    if (docRows[0].length === 0)
       return res.status(404).json({ error: "Documento no encontrado" });
-    const d = rows[0];
-    const [contestations] = await pool.query(`
-      SELECT c.*, u.name as registered_by_name
-      FROM contestations c
-      LEFT JOIN users u ON c.registered_by = u.id
-      WHERE c.document_id = ?
-    `, [req.params.id]);
-    const [attachments] = await pool.query(
-      "SELECT * FROM document_attachments WHERE document_id = ?", [req.params.id]
+
+    const d = docRows[0][0];
+    const contestations = contestationRows[0];
+    const attachments = attachmentRows[0];
+    const activities = activityRows[0];
+
+    // 🚀 Cargar archivos de contestaciones en paralelo también
+    const contestationsWithFiles = await Promise.all(
+      contestations.map(async (c) => {
+        const [files] = await pool.query(
+          "SELECT * FROM contestation_files WHERE contestation_id = ? LIMIT 50",
+          [c.id]
+        );
+        return {
+          id: c.id,
+          date: c.presentation_date?.toISOString().split('T')[0],
+          authority: c.authority_received,
+          notes: c.notes,
+          contact_method: c.contact_method,
+          registered_by: c.registered_by_name || c.registered_by,
+          registration_date: c.registration_date?.toISOString().split('T')[0],
+          files: files || []
+        };
+      })
     );
+
     res.json({
       id: d.id, title: d.title, trarniteNumber: d.trarnite_number,
       company: d.company_id || d.company_name, authority: d.authority,
@@ -548,19 +609,12 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
       createdAt: d.created_at?.toISOString().split('T')[0],
       lastEditedBy: d.last_edited_by_name || d.last_edited_by,
       lastEditedAt: d.last_edited_at?.toISOString().split('T')[0],
-      contestations: contestations.map(c => ({
-        id: c.id,
-        date: c.presentation_date?.toISOString().split('T')[0],
-        authority: c.authority_received,
-        notes: c.notes,
-        contact_method: c.contact_method,
-        registered_by: c.registered_by_name || c.registered_by,
-        registration_date: c.registration_date?.toISOString().split('T')[0],
-        files: []
-      })),
-      attachments
+      contestations: contestationsWithFiles,
+      attachments,
+      activities
     });
   } catch (error) {
+    console.error("Error fetching document:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -711,12 +765,26 @@ app.delete("/api/documents/:id", requireAuth, async (req, res) => {
 // 📋 GET actividades
 app.get("/api/activities", requireAuth, async (req, res) => {
   try {
-    const [rows] = await pool.query(`
+    const { docId, limit = 100 } = req.query;
+    const maxLimit = Math.min(500, parseInt(limit) || 100);
+
+    let query = `
       SELECT a.*, d.title as doc_title
       FROM activities a
       LEFT JOIN documents d ON a.document_id = d.id
-      ORDER BY a.due_date ASC
-    `);
+      WHERE 1=1
+    `;
+    const params = [];
+
+    if (docId) {
+      query += ` AND a.document_id = ?`;
+      params.push(docId);
+    }
+
+    query += ` ORDER BY a.due_date ASC LIMIT ?`;
+    params.push(maxLimit);
+
+    const [rows] = await pool.query(query, params);
     res.json(rows.map(a => ({
       id: a.id, docId: a.document_id, docTitle: a.doc_title,
       description: a.description, subDescription: a.sub_description,
@@ -809,26 +877,28 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
       LEFT JOIN users u ON c.registered_by = u.id
       WHERE c.document_id = ?
       ORDER BY c.registration_date DESC
+      LIMIT 100
     `, [req.params.id]);
 
-    // Obtener archivos para cada contestación
-    const contestations = [];
-    for (const c of rows) {
-      const [files] = await pool.query(
-        'SELECT * FROM contestation_files WHERE contestation_id = ?',
-        [c.id]
-      );
-      contestations.push({
-        id: c.id,
-        date: c.presentation_date?.toISOString().split('T')[0],
-        authority: c.authority_received,
-        notes: c.notes,
-        contact_method: c.contact_method,
-        registered_by: c.registered_by_name || c.registered_by,
-        registration_date: c.registration_date?.toISOString().split('T')[0],
-        files: files.map(f => ({ name: f.file_name, url: f.file_url }))
-      });
-    }
+    // 🚀 Cargar archivos en PARALELO en lugar de secuencial
+    const contestations = await Promise.all(
+      rows.map(async (c) => {
+        const [files] = await pool.query(
+          'SELECT * FROM contestation_files WHERE contestation_id = ? LIMIT 50',
+          [c.id]
+        );
+        return {
+          id: c.id,
+          date: c.presentation_date?.toISOString().split('T')[0],
+          authority: c.authority_received,
+          notes: c.notes,
+          contact_method: c.contact_method,
+          registered_by: c.registered_by_name || c.registered_by,
+          registration_date: c.registration_date?.toISOString().split('T')[0],
+          files: (files || []).map(f => ({ name: f.file_name, url: f.file_url }))
+        };
+      })
+    );
 
     res.json(contestations);
   } catch (error) {
