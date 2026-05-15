@@ -1055,7 +1055,7 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
 app.post("/api/notify/new-document", requireAuth, async (req, res) => {
   try {
     const [users] = await pool.query(
-      "SELECT email FROM users WHERE role IN ('Admin', 'Operator')"
+      "SELECT email FROM users WHERE role IN ('Admin', 'Operator') AND email != 'impuestos@corriente.com.ec'"
     );
     console.log(`Notificación enviada a ${users.length} usuarios`);
     res.json({ ok: true, recipients: users.length });
@@ -1153,6 +1153,7 @@ const getDocumentRecipients = async (documentId) => {
         SELECT last_edited_by FROM documents WHERE id = ? AND last_edited_by IS NOT NULL
       )
       AND u.email IS NOT NULL AND u.email != ''
+      AND u.email != 'impuestos@corriente.com.ec'
     `, [documentId, documentId]);
 
     return recipients;
@@ -1605,7 +1606,7 @@ app.post("/api/notifications/new-document", requireAuth, async (req, res) => {
     if (docs.length === 0) return res.status(404).json({ error: "Documento no encontrado" });
     const doc = docs[0];
     const [users] = await pool.query(
-      'SELECT id, name, email FROM users WHERE email IS NOT NULL AND email != "" AND (role = "Admin" OR role = "Operator")'
+      'SELECT id, name, email FROM users WHERE email IS NOT NULL AND email != "" AND email != "impuestos@corriente.com.ec" AND (role = "Admin" OR role = "Operator")'
     );
     const transporter = await getEmailTransporter();
     const config = await getSmtpConfig();
@@ -1646,7 +1647,7 @@ cron.schedule('0 6 * * *', async () => {
 
   try {
     const [users] = await pool.query(
-      'SELECT id, name, email FROM users WHERE email IS NOT NULL AND email != "" AND (role = "Admin" OR role = "Operator")'
+      'SELECT id, name, email FROM users WHERE email IS NOT NULL AND email != "" AND email != "impuestos@corriente.com.ec" AND (role = "Admin" OR role = "Operator")'
     );
 
     for (const user of users) {
