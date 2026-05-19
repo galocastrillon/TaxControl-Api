@@ -553,6 +553,72 @@ app.get("/api/documents", requireAuth, async (req, res) => {
   }
 });
 
+// 🚀 GET /api/documents/dashboard - Combined endpoint: stats + breakdown + by-deadline in ONE round-trip
+app.get("/api/documents/dashboard", requireAuth, async (req, res) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const next7 = new Date(); next7.setDate(next7.getDate() + 7);
+    const next7Str = next7.toISOString().split('T')[0];
+    const next15 = new Date(); next15.setDate(next15.getDate() + 15);
+    const next15Str = next15.toISOString().split('T')[0];
+
+    // Run all 3 queries in parallel at the DB level
+    const [statsResult, breakdownResult, deadlineResult] = await Promise.all([
+      // 1. Stats: pure SQL aggregation — no JS row iteration
+      pool.query(`
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN status = 'En progreso' THEN 1 ELSE 0 END) as in_progress,
+          SUM(CASE WHEN status != 'Completado' AND due_date >= ? AND due_date <= ? THEN 1 ELSE 0 END) as upcoming,
+          SUM(CASE WHEN status != 'Completado' AND due_date < ? THEN 1 ELSE 0 END) as overdue
+        FROM documents
+      `, [today, next15Str, today]),
+
+      // 2. Status breakdown: simple GROUP BY
+      pool.query(`SELECT status, COUNT(*) as count FROM documents GROUP BY status ORDER BY count DESC`),
+
+      // 3. Deadline docs: only non-completed within 15 days + overdue
+      pool.query(`
+        SELECT id, title, trarnite_number, due_date, status, company_id, authority, department
+        FROM documents
+        WHERE status != 'Completado'
+          AND due_date IS NOT NULL
+          AND due_date <= ?
+        ORDER BY due_date ASC
+        LIMIT 100
+      `, [next15Str])
+    ]);
+
+    const [statsRows] = statsResult;
+    const [breakdownRows] = breakdownResult;
+    const [deadlineRows] = deadlineResult;
+
+    const stats = {
+      total: Number(statsRows[0].total),
+      inProgress: Number(statsRows[0].in_progress),
+      upcoming: Number(statsRows[0].upcoming),
+      overdue: Number(statsRows[0].overdue)
+    };
+
+    const statusBreakdown = breakdownRows.map(r => ({ status: r.status || 'Sin estado', count: Number(r.count) }));
+
+    const overdue = [], upcoming7 = [], upcoming15 = [];
+    for (const d of deadlineRows) {
+      let dueDate = d.due_date instanceof Date ? d.due_date.toISOString().split('T')[0] : d.due_date;
+      if (!dueDate) continue;
+      const doc = { id: d.id, title: d.title, trarniteNumber: d.trarnite_number, company: d.company_id, authority: d.authority, department: d.department, dueDate, status: d.status };
+      if (dueDate < today) overdue.push(doc);
+      else if (dueDate <= next7Str) upcoming7.push(doc);
+      else upcoming15.push(doc);
+    }
+
+    res.json({ stats, statusBreakdown, byDeadline: { overdue, upcoming7, upcoming15 } });
+  } catch (error) {
+    console.error('Error fetching dashboard data:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 📊 GET Dashboard Statistics (all documents stats)
 app.get("/api/documents/stats", requireAuth, async (req, res) => {
   try {
@@ -1837,6 +1903,21 @@ cron.schedule('0 6 * * *', async () => {
 
 // 🔟 Arrancar servidor
 const PORT = 3001;
-app.listen(PORT, () => {
+
+async function ensureIndexes() {
+  try {
+    // These indexes speed up dashboard queries significantly (status, due_date filtering)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_status ON documents (status)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_due_date ON documents (due_date)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_status_due ON documents (status, due_date)`);
+    console.log('✅ Índices de base de datos verificados');
+  } catch (err) {
+    // Non-fatal: some MariaDB versions don't support IF NOT EXISTS for indexes
+    console.warn('⚠️ No se pudieron crear índices (no crítico):', err.message);
+  }
+}
+
+app.listen(PORT, async () => {
   console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
+  await ensureIndexes();
 });
