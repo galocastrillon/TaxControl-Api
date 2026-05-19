@@ -258,9 +258,30 @@ app.get("/", (_req, res) => {
   res.json({ status: "ok", message: "TaxControl-Api is running", version: "2.0" });
 });
 
-// 4️⃣ Endpoint de salud
-app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok" });
+// 4️⃣ Endpoint de salud (con info de conexión)
+app.get("/api/health", async (_req, res) => {
+  let dbStatus = "disconnected";
+  let dbVersion = null;
+  let documentCount = 0;
+
+  try {
+    const [rows] = await pool.query("SELECT VERSION() AS version");
+    dbStatus = "connected";
+    dbVersion = rows[0].version;
+
+    // Try to get document count
+    const [countRows] = await pool.query("SELECT COUNT(*) as count FROM documents");
+    documentCount = countRows[0]?.count || 0;
+  } catch (error) {
+    console.error("Health check DB error:", error);
+  }
+
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    database: { status: dbStatus, version: dbVersion, documents: documentCount },
+    api: "TaxControl-Api v2.0"
+  });
 });
 
 // 5️⃣ Endpoint de prueba DB
