@@ -532,6 +532,100 @@ app.get("/api/documents", requireAuth, async (req, res) => {
   }
 });
 
+// 📊 GET Dashboard Statistics (all documents stats)
+app.get("/api/documents/stats", requireAuth, async (req, res) => {
+  try {
+    const [docs] = await pool.query('SELECT status, due_date FROM documents');
+
+    const today = new Date().toISOString().split('T')[0];
+    const upcoming15 = new Date();
+    upcoming15.setDate(upcoming15.getDate() + 15);
+    const upcoming15Str = upcoming15.toISOString().split('T')[0];
+
+    let inProgress = 0;
+    let upcoming = 0;
+    let overdue = 0;
+
+    for (const doc of docs) {
+      if (doc.status === 'En progreso') inProgress++;
+      const dueDate = doc.due_date?.toISOString?.().split('T')[0];
+      if (dueDate && dueDate < today && doc.status !== 'Completado') overdue++;
+      else if (dueDate && dueDate >= today && dueDate <= upcoming15Str && doc.status !== 'Completado') upcoming++;
+    }
+
+    res.json({ total: docs.length, inProgress, upcoming, overdue });
+  } catch (error) {
+    console.error('Error fetching stats:', error);
+    res.json({ total: 0, inProgress: 0, upcoming: 0, overdue: 0 });
+  }
+});
+
+// 📈 GET Status Breakdown (for pie chart)
+app.get("/api/documents/status-breakdown", requireAuth, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT status, COUNT(*) as count FROM documents GROUP BY status ORDER BY count DESC'
+    );
+    res.json(rows.map((row) => ({ status: row.status || 'Sin estado', count: row.count })));
+  } catch (error) {
+    console.error('Error fetching status breakdown:', error);
+    res.json([]);
+  }
+});
+
+// 📋 GET Documents by Deadline Status
+app.get("/api/documents/by-deadline", requireAuth, async (req, res) => {
+  try {
+    const [allDocs] = await pool.query(`
+      SELECT id, title, trarnite_number, due_date, status, company_id, authority, department,
+             notification_date, days_limit, day_type, file_name, file_url, created_by, created_at
+      FROM documents
+      WHERE status != 'Completado'
+    `);
+
+    const today = new Date().toISOString().split('T')[0];
+    const next7 = new Date();
+    next7.setDate(next7.getDate() + 7);
+    const next7Str = next7.toISOString().split('T')[0];
+    const next15 = new Date();
+    next15.setDate(next15.getDate() + 15);
+    const next15Str = next15.toISOString().split('T')[0];
+
+    const overdue = [];
+    const upcoming7 = [];
+    const upcoming15 = [];
+
+    for (const d of allDocs) {
+      const dueDate = d.due_date?.toISOString?.().split('T')[0];
+      if (!dueDate) continue;
+
+      const doc = {
+        id: d.id,
+        title: d.title,
+        trarniteNumber: d.trarnite_number,
+        company: d.company_id,
+        authority: d.authority,
+        department: d.department,
+        dueDate,
+        status: d.status
+      };
+
+      if (dueDate < today) {
+        overdue.push(doc);
+      } else if (dueDate >= today && dueDate <= next7Str) {
+        upcoming7.push(doc);
+      } else if (dueDate > next7Str && dueDate <= next15Str) {
+        upcoming15.push(doc);
+      }
+    }
+
+    res.json({ overdue, upcoming7, upcoming15 });
+  } catch (error) {
+    console.error('Error fetching by-deadline:', error);
+    res.json({ overdue: [], upcoming7: [], upcoming15: [] });
+  }
+});
+
 // 📄 GET un documento por ID (optimized with parallel queries)
 app.get("/api/documents/:id", requireAuth, async (req, res) => {
   try {
