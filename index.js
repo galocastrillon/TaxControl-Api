@@ -30,7 +30,9 @@ const pool = mysql.createPool({
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  connectionLimit: 10,
+  connectionLimit: 50,
+  idleTimeout: 30000,
+  enableKeepAlive: true
 });
 
 // 🌐 Email Template Helper - Multi-language Support (Spanish + Simplified Chinese)
@@ -482,9 +484,12 @@ app.get("/api/documents", requireAuth, async (req, res) => {
     const offset = (pageNum - 1) * pageSize;
 
     let query = `
-      SELECT d.*, c.name as company_name, u.name as created_by_name, u2.name as last_edited_by_name
+      SELECT d.id, d.title, d.trarnite_number, d.document_number, d.company_id, d.authority,
+             d.department, d.notification_date, d.days_limit, d.day_type, d.due_date, d.status,
+             d.summary_es, d.summary_cn, d.file_name, d.file_url, d.related_doc,
+             d.created_by, u.name as created_by_name, d.created_at,
+             d.last_edited_by, u2.name as last_edited_by_name, d.last_edited_at
       FROM documents d
-      LEFT JOIN companies c ON d.company_id = c.id
       LEFT JOIN users u ON d.created_by = u.id
       LEFT JOIN users u2 ON d.last_edited_by = u2.id
       WHERE 1=1
@@ -501,12 +506,12 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       countParams.push(company_id);
     }
 
-    // Filtro por authority si se proporciona
+    // Filtro por authority si se proporciona (case-insensitive comparison)
     if (authority && authority !== 'Todas') {
-      query += ` AND UPPER(TRIM(d.authority)) = UPPER(TRIM(?))`;
-      countQuery += ` AND UPPER(TRIM(d.authority)) = UPPER(TRIM(?))`;
-      params.push(authority);
-      countParams.push(authority);
+      query += ` AND d.authority LIKE ?`;
+      countQuery += ` AND d.authority LIKE ?`;
+      params.push(`%${authority}%`);
+      countParams.push(`%${authority}%`);
     }
 
     query += ` ORDER BY d.created_at DESC LIMIT ? OFFSET ?`;
@@ -1054,6 +1059,58 @@ app.put("/api/activities/:id/complete", requireAuth, async (req, res) => {
 });
 
 // 💬 GET contestaciones de un documento
+// ⚡ BATCH endpoint para evitar N+1 queries - cargar contestations de múltiples docs en UNA llamada
+app.get("/api/documents/contestations/batch", requireAuth, async (req, res) => {
+  try {
+    const docIds = (req.query.ids as string || '').split(',').filter(id => id.trim());
+    if (docIds.length === 0) return res.json({});
+
+    // 1. Fetch all contestations for these documents in ONE query
+    const placeholders = docIds.map(() => '?').join(',');
+    const [contestations] = await pool.query(`
+      SELECT c.id, c.document_id, c.presentation_date, c.authority_received, c.notes,
+             c.contact_method, c.registered_by, u.name as registered_by_name, c.registration_date
+      FROM contestations c
+      LEFT JOIN users u ON c.registered_by = u.id
+      WHERE c.document_id IN (${placeholders})
+      ORDER BY c.document_id, c.registration_date DESC
+    `, docIds);
+
+    // 2. Get all contestation files in ONE query
+    const contestationIds = contestations.map((c: any) => c.id);
+    let files: any[] = [];
+    if (contestationIds.length > 0) {
+      const filePlaceholders = contestationIds.map(() => '?').join(',');
+      const [filesResult] = await pool.query(`
+        SELECT contestation_id, file_name, file_url FROM contestation_files WHERE contestation_id IN (${filePlaceholders})
+      `, contestationIds);
+      files = filesResult;
+    }
+
+    // 3. Group by document_id in JavaScript
+    const result: Record<string, any[]> = {};
+    for (const contest of contestations) {
+      if (!result[contest.document_id]) result[contest.document_id] = [];
+      const contestFiles = files.filter((f: any) => f.contestation_id === contest.id);
+      result[contest.document_id].push({
+        id: contest.id,
+        date: contest.presentation_date?.toISOString?.()?.split('T')[0],
+        authority: contest.authority_received,
+        notes: contest.notes,
+        contact_method: contest.contact_method,
+        registered_by: contest.registered_by_name || contest.registered_by,
+        registration_date: contest.registration_date?.toISOString?.()?.split('T')[0],
+        files: contestFiles.map((f: any) => ({ name: f.file_name, url: f.file_url }))
+      });
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error("GET /api/documents/contestations/batch error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(`
@@ -1906,10 +1963,21 @@ const PORT = 3001;
 
 async function ensureIndexes() {
   try {
-    // These indexes speed up dashboard queries significantly (status, due_date filtering)
+    // Indexes for dashboard queries (status, due_date filtering)
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_status ON documents (status)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_due_date ON documents (due_date)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_status_due ON documents (status, due_date)`);
+
+    // Indexes for JOIN conditions and filters
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_created_by ON documents (created_by)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_last_edited_by ON documents (last_edited_by)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_company_id ON documents (company_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_authority ON documents (authority(50))`);
+
+    // Indexes for contestations queries (avoid N+1)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_contestations_document_id ON contestations (document_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_contestation_files_contestation_id ON contestation_files (contestation_id)`);
+
     console.log('✅ Índices de base de datos verificados');
   } catch (err) {
     // Non-fatal: some MariaDB versions don't support IF NOT EXISTS for indexes
