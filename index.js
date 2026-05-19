@@ -520,13 +520,11 @@ app.get("/api/documents", requireAuth, async (req, res) => {
     }));
 
     res.json({
-      data: docs,
-      pagination: {
-        page: pageNum,
-        limit: pageSize,
-        total: total,
-        totalPages: Math.ceil(total / pageSize)
-      }
+      documents: docs,
+      total: total,
+      page: pageNum,
+      limit: pageSize,
+      hasMore: pageNum < Math.ceil(total / pageSize)
     });
   } catch (error) {
     console.error("GET /api/documents error:", error);
