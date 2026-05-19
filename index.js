@@ -5,9 +5,23 @@ import dotenv from "dotenv";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
 import cron from "node-cron";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import multer from "multer";
 
 // 1️⃣ Cargar variables de entorno
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+
+// Crear directorio de uploads si no existe
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+}
 
 // 2️⃣ Crear app
 const app = express();
@@ -20,8 +34,35 @@ app.use(cors({
   ],
   credentials: true
 }));
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
+
+// Servir archivos estáticos de uploads
+app.use('/api/files', express.static(UPLOAD_DIR));
+
+// Configurar multer para carga de archivos
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, UPLOAD_DIR);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
+    cb(null, `${uniqueSuffix}-${file.originalname}`);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: MAX_FILE_SIZE },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
+    if (allowed.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Solo se permiten archivos PDF e imágenes (JPG, PNG)'));
+    }
+  }
+});
 
 // 3️⃣ Crear pool MariaDB (GLOBAL)
 const pool = mysql.createPool({
@@ -448,6 +489,26 @@ app.delete("/api/users/:id", requireAuth, async (req, res) => {
     await pool.query("DELETE FROM users WHERE id = ?", [req.params.id]);
     res.json({ ok: true });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 📁 POST cargar archivo
+app.post("/api/upload", requireAuth, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No se ha cargado ningún archivo' });
+    }
+
+    const fileUrl = `/api/files/${req.file.filename}`;
+    res.json({
+      success: true,
+      fileUrl,
+      fileName: req.file.originalname,
+      size: req.file.size
+    });
+  } catch (error) {
+    console.error('Upload error:', error);
     res.status(500).json({ error: error.message });
   }
 });
