@@ -548,7 +548,10 @@ app.get("/api/documents/stats", requireAuth, async (req, res) => {
 
     for (const doc of docs) {
       if (doc.status === 'En progreso') inProgress++;
-      const dueDate = doc.due_date?.toISOString?.().split('T')[0];
+      let dueDate = doc.due_date;
+      if (dueDate instanceof Date) {
+        dueDate = dueDate.toISOString().split('T')[0];
+      }
       if (dueDate && dueDate < today && doc.status !== 'Completado') overdue++;
       else if (dueDate && dueDate >= today && dueDate <= upcoming15Str && doc.status !== 'Completado') upcoming++;
     }
@@ -596,7 +599,10 @@ app.get("/api/documents/by-deadline", requireAuth, async (req, res) => {
     const upcoming15 = [];
 
     for (const d of allDocs) {
-      const dueDate = d.due_date?.toISOString?.().split('T')[0];
+      let dueDate = d.due_date;
+      if (dueDate instanceof Date) {
+        dueDate = dueDate.toISOString().split('T')[0];
+      }
       if (!dueDate) continue;
 
       const doc = {
