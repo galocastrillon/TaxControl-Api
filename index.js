@@ -578,8 +578,10 @@ app.get("/api/documents", requireAuth, async (req, res) => {
     query += ` ORDER BY d.created_at DESC LIMIT ? OFFSET ?`;
     params.push(pageSize, offset);
 
-    const [rows] = await pool.query(query, params);
-    const [countRows] = await pool.query(countQuery, countParams);
+    const [[rows], [countRows]] = await Promise.all([
+      pool.query(query, params),
+      pool.query(countQuery, countParams)
+    ]);
     const total = countRows[0]?.total || 0;
 
     const docs = rows.map(d => ({
@@ -812,9 +814,11 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
         LIMIT 100
       `, [docId]),
       pool.query(`
-        SELECT * FROM activities
-        WHERE document_id = ?
-        ORDER BY due_date DESC
+        SELECT a.*, u.name as created_by_name
+        FROM activities a
+        LEFT JOIN users u ON a.created_by = u.id
+        WHERE a.document_id = ?
+        ORDER BY a.due_date DESC
         LIMIT 50
       `, [docId])
     ]);
@@ -836,7 +840,7 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
       status: a.status,
       dueDate: a.due_date?.toISOString?.().split('T')[0] || a.due_date,
       priority: a.priority,
-      createdBy: a.created_by,
+      createdBy: a.created_by_name || a.created_by,
       createdAt: a.created_at?.toISOString?.().split('T')[0] || a.created_at,
       completedBy: a.completed_by,
       completedAt: a.completed_at?.toISOString?.().split('T')[0] || a.completed_at
@@ -1036,9 +1040,10 @@ app.get("/api/activities", requireAuth, async (req, res) => {
     const maxLimit = Math.min(500, parseInt(limit) || 100);
 
     let query = `
-      SELECT a.*, d.title as doc_title
+      SELECT a.*, d.title as doc_title, u.name as created_by_name
       FROM activities a
       LEFT JOIN documents d ON a.document_id = d.id
+      LEFT JOIN users u ON a.created_by = u.id
       WHERE 1=1
     `;
     const params = [];
@@ -1057,6 +1062,8 @@ app.get("/api/activities", requireAuth, async (req, res) => {
       description: a.description, subDescription: a.sub_description,
       dueDate: a.due_date?.toISOString?.().split('T')[0],
       status: a.status, priority: a.priority,
+      createdBy: a.created_by_name || a.created_by,
+      createdAt: a.created_at?.toISOString?.().split('T')[0],
       completedBy: a.completed_by, completedAt: a.completed_at?.toISOString?.().split('T')[0]
     })));
   } catch (error) {
@@ -2054,6 +2061,13 @@ async function ensureIndexes() {
     // Indexes for contestations queries (avoid N+1)
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_contestations_document_id ON contestations (document_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_contestation_files_contestation_id ON contestation_files (contestation_id)`);
+
+    // Indexes for activities queries
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_activities_document_id ON activities (document_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_activities_created_by ON activities (created_by)`);
+
+    // Index for ORDER BY created_at DESC on documents list
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents (created_at)`);
 
     console.log('✅ Índices de base de datos verificados');
   } catch (err) {
