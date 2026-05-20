@@ -9,6 +9,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import multer from "multer";
+import compression from "compression";
 
 // 1️⃣ Cargar variables de entorno
 dotenv.config();
@@ -25,6 +26,7 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 
 // 2️⃣ Crear app
 const app = express();
+app.use(compression()); // ⚡ Gzip compression for all responses
 app.use(cors({
   origin: [
     'http://taxcontrolapp.192.168.60.109.sslip.io',
@@ -36,6 +38,18 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
+
+// 🚀 Simple in-memory cache for documents list (60s TTL)
+const docsCache = new Map();
+const DOCS_CACHE_TTL = 60 * 1000;
+const getCachedDocs = (key) => {
+  const entry = docsCache.get(key);
+  if (!entry) return null;
+  if (entry.cachedAt + DOCS_CACHE_TTL < Date.now()) { docsCache.delete(key); return null; }
+  return entry.data;
+};
+const setCachedDocs = (key, data) => docsCache.set(key, { data, cachedAt: Date.now() });
+const invalidateDocsCache = () => docsCache.clear();
 
 // Servir archivos estáticos de uploads
 app.use('/api/files', express.static(UPLOAD_DIR));
@@ -544,6 +558,11 @@ app.get("/api/documents", requireAuth, async (req, res) => {
     const pageSize = Math.min(500, Math.max(5, parseInt(limit) || 20));
     const offset = (pageNum - 1) * pageSize;
 
+    // 🚀 Check cache first (60s TTL)
+    const cacheKey = `docs:${company_id || 'all'}:${authority || 'all'}:${pageNum}:${pageSize}`;
+    const cached = getCachedDocs(cacheKey);
+    if (cached) return res.json(cached);
+
     let query = `
       SELECT d.id, d.title, d.trarnite_number, d.document_number, d.company_id, d.authority,
              d.department, d.notification_date, d.days_limit, d.day_type, d.due_date, d.status,
@@ -578,8 +597,11 @@ app.get("/api/documents", requireAuth, async (req, res) => {
     query += ` ORDER BY d.created_at DESC LIMIT ? OFFSET ?`;
     params.push(pageSize, offset);
 
-    const [rows] = await pool.query(query, params);
-    const [countRows] = await pool.query(countQuery, countParams);
+    // 🚀 Execute count and main query in parallel
+    const [[rows], [countRows]] = await Promise.all([
+      pool.query(query, params),
+      pool.query(countQuery, countParams)
+    ]);
     const total = countRows[0]?.total || 0;
 
     const docs = rows.map(d => ({
@@ -606,13 +628,15 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       contestations: []
     }));
 
-    res.json({
+    const response = {
       documents: docs,
       total: total,
       page: pageNum,
       limit: pageSize,
       hasMore: pageNum < Math.ceil(total / pageSize)
-    });
+    };
+    setCachedDocs(cacheKey, response);
+    res.json(response);
   } catch (error) {
     console.error("GET /api/documents error:", error);
     res.status(500).json({ error: error.message });
@@ -948,6 +972,7 @@ app.post("/api/documents", requireAuth, async (req, res) => {
       d.status || "Inicializado", d.summaryEs || '', d.summaryCn || '',
       d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.user_id
     ]);
+    invalidateDocsCache();
     res.status(201).json({ id, ...d });
   } catch (error) {
     console.error("POST /api/documents error:", error);
@@ -1047,6 +1072,7 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
       await sendNotificationEmail(recipients, subject, htmlContent, id, 'modification');
     }
 
+    invalidateDocsCache();
     res.json({ ok: true });
   } catch (error) {
     console.error("PUT /api/documents error:", error);
@@ -1058,6 +1084,7 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
 app.delete("/api/documents/:id", requireAuth, async (req, res) => {
   try {
     await pool.query("DELETE FROM documents WHERE id = ?", [req.params.id]);
+    invalidateDocsCache();
     res.json({ ok: true });
   } catch (error) {
     console.error("DELETE /api/documents error:", error);
