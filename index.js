@@ -814,9 +814,9 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
         LIMIT 100
       `, [docId]),
       pool.query(`
-        SELECT a.*, u.name as created_by_name
+        SELECT a.*, u.name as completed_by_name
         FROM activities a
-        LEFT JOIN users u ON a.created_by = u.id
+        LEFT JOIN users u ON a.completed_by = u.id
         WHERE a.document_id = ?
         ORDER BY a.due_date DESC
         LIMIT 50
@@ -1040,10 +1040,10 @@ app.get("/api/activities", requireAuth, async (req, res) => {
     const maxLimit = Math.min(500, parseInt(limit) || 100);
 
     let query = `
-      SELECT a.*, d.title as doc_title, u.name as created_by_name
+      SELECT a.*, d.title as doc_title, u.name as completed_by_name
       FROM activities a
       LEFT JOIN documents d ON a.document_id = d.id
-      LEFT JOIN users u ON a.created_by = u.id
+      LEFT JOIN users u ON a.completed_by = u.id
       WHERE 1=1
     `;
     const params = [];
