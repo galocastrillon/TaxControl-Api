@@ -1080,9 +1080,9 @@ app.post("/api/activities", requireAuth, async (req, res) => {
     // Insert the activity with audit trail
     await pool.query(
       `INSERT INTO activities
-       (id, document_id, description, sub_description, due_date, priority, status, created_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'Pending', ?, NOW())`,
-      [id, docId, description, subDescription, dueDate, priority || 'Medium', req.user.id || req.user.name]
+       (id, document_id, description, sub_description, due_date, priority, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'Pending', NOW())`,
+      [id, docId, description, subDescription, dueDate, priority || 'Medium']
     );
 
     // Get document info for notifications
@@ -2064,7 +2064,7 @@ async function ensureIndexes() {
 
     // Indexes for activities queries
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_activities_document_id ON activities (document_id)`);
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_activities_created_by ON activities (created_by)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_activities_completed_by ON activities (completed_by)`);
 
     // Index for ORDER BY created_at DESC on documents list
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents (created_at)`);
