@@ -1161,16 +1161,29 @@ app.get("/api/activities", requireAuth, async (req, res) => {
     params.push(maxLimit);
 
     const [rows] = await pool.query(query, params);
-    res.json(rows.map(a => ({
-      id: a.id, docId: a.document_id, docTitle: a.doc_title,
-      description: a.description, subDescription: a.sub_description,
-      dueDate: a.due_date?.toISOString?.().split('T')[0],
-      status: a.status, priority: a.priority,
-      createdBy: a.created_by_name || a.created_by,
-      createdAt: a.created_at?.toISOString?.().split('T')[0],
-      completedBy: a.completed_by_name || a.completed_by,
-      completedAt: a.completed_at?.toISOString?.().split('T')[0]
-    })));
+
+    // 🚀 Cargar archivos en PARALELO
+    const activities = await Promise.all(
+      rows.map(async (a) => {
+        const [files] = await pool.query(
+          'SELECT * FROM activity_files WHERE activity_id = ? LIMIT 50',
+          [a.id]
+        );
+        return {
+          id: a.id, docId: a.document_id, docTitle: a.doc_title,
+          description: a.description, subDescription: a.sub_description,
+          dueDate: a.due_date?.toISOString?.().split('T')[0],
+          status: a.status, priority: a.priority,
+          createdBy: a.created_by_name || a.created_by,
+          createdAt: a.created_at?.toISOString?.().split('T')[0],
+          completedBy: a.completed_by_name || a.completed_by,
+          completedAt: a.completed_at?.toISOString?.().split('T')[0],
+          files: (files || []).map(f => ({ id: f.id, name: f.file_name, url: f.file_url }))
+        };
+      })
+    );
+
+    res.json(activities);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1178,7 +1191,7 @@ app.get("/api/activities", requireAuth, async (req, res) => {
 
 // 📋 POST crear actividad
 app.post("/api/activities", requireAuth, async (req, res) => {
-  const { docId, description, subDescription, dueDate, priority } = req.body;
+  const { docId, description, subDescription, dueDate, priority, files } = req.body;
   try {
     const id = `a${Date.now()}`;
 
@@ -1189,6 +1202,20 @@ app.post("/api/activities", requireAuth, async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, 'Pending', ?, NOW())`,
       [id, docId, description, subDescription, dueDate, priority || 'Medium', req.user.user_id]
     );
+
+    // Guardar archivos asociados si existen
+    if (files && Array.isArray(files) && files.length > 0) {
+      for (const file of files) {
+        if (file.name && file.url) {
+          const fileId = `af${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          await pool.query(
+            `INSERT INTO activity_files (id, activity_id, file_name, file_url)
+             VALUES (?, ?, ?, ?)`,
+            [fileId, id, file.name, file.url]
+          );
+        }
+      }
+    }
 
     // Get document info for notifications
     const [docRows] = await pool.query('SELECT title, trarnite_number FROM documents WHERE id = ?', [docId]);
@@ -1201,7 +1228,8 @@ app.post("/api/activities", requireAuth, async (req, res) => {
       await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, docId, 'activity_added');
     }
 
-    res.status(201).json({ id, docId, description, subDescription, dueDate, priority: priority || 'Medium', status: 'Pending', createdBy: req.user.name, createdAt: new Date().toISOString().split('T')[0] });
+    const responseFiles = files && Array.isArray(files) ? files.map(f => ({ name: f.name, url: f.url })) : [];
+    res.status(201).json({ id, docId, description, subDescription, dueDate, priority: priority || 'Medium', status: 'Pending', createdBy: req.user.name, createdAt: new Date().toISOString().split('T')[0], files: responseFiles });
   } catch (error) {
     console.error("POST /api/activities error:", error);
     res.status(500).json({ error: error.message });
@@ -1227,6 +1255,9 @@ app.put("/api/activities/:id", requireAuth, async (req, res) => {
 // 📋 DELETE eliminar actividad
 app.delete("/api/activities/:id", requireAuth, async (req, res) => {
   try {
+    // Eliminar archivos asociados primero
+    await pool.query("DELETE FROM activity_files WHERE activity_id = ?", [req.params.id]);
+    // Luego eliminar la actividad
     await pool.query("DELETE FROM activities WHERE id = ?", [req.params.id]);
     res.json({ ok: true });
   } catch (error) {
@@ -1240,6 +1271,40 @@ app.put("/api/activities/:id/complete", requireAuth, async (req, res) => {
     await pool.query(
       `UPDATE activities SET status='Completed', completed_by=?, completed_at=NOW() WHERE id=?`,
       [req.user.name, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 📎 POST subir archivo a actividad
+app.post("/api/activities/:id/files", requireAuth, async (req, res) => {
+  const { fileName, fileUrl } = req.body;
+
+  if (!fileName || !fileUrl) {
+    return res.status(400).json({ error: "fileName y fileUrl son requeridos" });
+  }
+
+  try {
+    const fileId = `af${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    await pool.query(
+      `INSERT INTO activity_files (id, activity_id, file_name, file_url)
+       VALUES (?, ?, ?, ?)`,
+      [fileId, req.params.id, fileName, fileUrl]
+    );
+    res.status(201).json({ id: fileId, name: fileName, url: fileUrl });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 📎 DELETE eliminar archivo de actividad
+app.delete("/api/activities/:id/files/:fileId", requireAuth, async (req, res) => {
+  try {
+    await pool.query(
+      `DELETE FROM activity_files WHERE id = ? AND activity_id = ?`,
+      [req.params.fileId, req.params.id]
     );
     res.json({ ok: true });
   } catch (error) {
