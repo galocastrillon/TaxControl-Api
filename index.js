@@ -2120,18 +2120,9 @@ async function migrateActivitiesAuditTrail() {
 
     const adminId = adminUsers[0].id;
 
-    // Limpiar created_by que no son user IDs válidos (ej: session IDs guardados por bug previo)
-    await pool.query(
-      `UPDATE activities SET created_by = NULL
-       WHERE created_by IS NOT NULL
-         AND created_by NOT IN (SELECT id FROM users)`
-    );
-
-    // Asignar actividades sin created_by al admin (solo created_at si está vacío)
-    await pool.query(
-      "UPDATE activities SET created_by = ? WHERE created_by IS NULL",
-      [adminId]
-    );
+    // Note: created_by column doesn't exist in activities table schema
+    // Activities use completed_by instead for audit trail
+    // Ensure all activities have a created_at timestamp
     await pool.query(
       "UPDATE activities SET created_at = NOW() WHERE created_at IS NULL"
     );
