@@ -2120,9 +2120,23 @@ async function migrateActivitiesAuditTrail() {
 
     const adminId = adminUsers[0].id;
 
-    // Note: activities table schema uses completed_by and completed_at
-    // No created_by or created_at columns exist
-    // Migration complete
+    // Agregar columnas created_by y created_at si no existen
+    try {
+      await pool.query("ALTER TABLE activities ADD COLUMN created_by VARCHAR(50)");
+      console.log('✅ Campo created_by agregado a activities');
+    } catch (err) {
+      // Campo ya existe, ignorar
+    }
+
+    try {
+      await pool.query("ALTER TABLE activities ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
+      console.log('✅ Campo created_at agregado a activities');
+    } catch (err) {
+      // Campo ya existe, ignorar
+    }
+
+    // Poblar actividades antiguas sin created_by
+    await pool.query("UPDATE activities SET created_by = ? WHERE created_by IS NULL", [adminId]);
 
     console.log('✅ Migración de auditoría de actividades completada');
   } catch (err) {
