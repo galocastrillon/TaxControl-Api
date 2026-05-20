@@ -785,6 +785,26 @@ app.get("/api/documents/by-deadline", requireAuth, async (req, res) => {
   }
 });
 
+// 🔍 Diagnostic endpoint to find duplicate/similar documents by title pattern
+app.get("/api/documents/search/duplicates", requireAuth, async (req, res) => {
+  try {
+    const { title } = req.query;
+    if (!title) return res.status(400).json({ error: "title parameter required" });
+
+    const [docs] = await pool.query(`
+      SELECT id, title, due_date, status, created_at
+      FROM documents
+      WHERE title LIKE ?
+      ORDER BY title, due_date ASC
+    `, [`%${title}%`]);
+
+    res.json({ found: docs.length, documents: docs });
+  } catch (error) {
+    console.error('Error searching duplicates:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 📄 GET un documento por ID (optimized with parallel queries)
 app.get("/api/documents/:id", requireAuth, async (req, res) => {
   try {
