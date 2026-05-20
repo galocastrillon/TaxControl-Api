@@ -767,7 +767,7 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
     const rawActivities = activityRows[0];
 
     // 📋 Map activities with proper date formatting for audit trail
-    const activities = rawActivities.map((a: any) => ({
+    const activities = rawActivities.map((a) => ({
       id: a.id,
       docId: a.document_id,
       description: a.description,
@@ -1077,7 +1077,7 @@ app.put("/api/activities/:id/complete", requireAuth, async (req, res) => {
 // ⚡ BATCH endpoint para evitar N+1 queries - cargar contestations de múltiples docs en UNA llamada
 app.get("/api/documents/contestations/batch", requireAuth, async (req, res) => {
   try {
-    const docIds = (req.query.ids as string || '').split(',').filter(id => id.trim());
+    const docIds = (String(req.query.ids || '')).split(',').filter(id => id.trim());
     if (docIds.length === 0) return res.json({});
 
     // 1. Fetch all contestations for these documents in ONE query
@@ -1092,8 +1092,8 @@ app.get("/api/documents/contestations/batch", requireAuth, async (req, res) => {
     `, docIds);
 
     // 2. Get all contestation files in ONE query
-    const contestationIds = contestations.map((c: any) => c.id);
-    let files: any[] = [];
+    const contestationIds = contestations.map((c) => c.id);
+    let files = [];
     if (contestationIds.length > 0) {
       const filePlaceholders = contestationIds.map(() => '?').join(',');
       const [filesResult] = await pool.query(`
@@ -1103,10 +1103,10 @@ app.get("/api/documents/contestations/batch", requireAuth, async (req, res) => {
     }
 
     // 3. Group by document_id in JavaScript
-    const result: Record<string, any[]> = {};
+    const result = {};
     for (const contest of contestations) {
       if (!result[contest.document_id]) result[contest.document_id] = [];
-      const contestFiles = files.filter((f: any) => f.contestation_id === contest.id);
+      const contestFiles = files.filter((f) => f.contestation_id === contest.id);
       result[contest.document_id].push({
         id: contest.id,
         date: contest.presentation_date?.toISOString?.()?.split('T')[0],
@@ -1115,7 +1115,7 @@ app.get("/api/documents/contestations/batch", requireAuth, async (req, res) => {
         contact_method: contest.contact_method,
         registered_by: contest.registered_by_name || contest.registered_by,
         registration_date: contest.registration_date?.toISOString?.()?.split('T')[0],
-        files: contestFiles.map((f: any) => ({ name: f.file_name, url: f.file_url }))
+        files: contestFiles.map((f) => ({ name: f.file_name, url: f.file_url }))
       });
     }
 
