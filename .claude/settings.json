@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /home/user/TaxControl-Api && npm install compression 2>&1 | head -20",
+            "timeout": 120,
+            "statusMessage": "Instalando dependencias...",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
