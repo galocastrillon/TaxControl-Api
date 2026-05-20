@@ -541,7 +541,7 @@ app.get("/api/documents", requireAuth, async (req, res) => {
   try {
     const { company_id, authority, page = 1, limit = 20 } = req.query;
     const pageNum = Math.max(1, parseInt(page) || 1);
-    const pageSize = Math.min(100, Math.max(5, parseInt(limit) || 20));
+    const pageSize = Math.min(500, Math.max(5, parseInt(limit) || 20));
     const offset = (pageNum - 1) * pageSize;
 
     let query = `
