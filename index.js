@@ -1072,10 +1072,11 @@ app.get("/api/activities", requireAuth, async (req, res) => {
     const maxLimit = Math.min(500, parseInt(limit) || 100);
 
     let query = `
-      SELECT a.*, d.title as doc_title, u.name as completed_by_name
+      SELECT a.*, d.title as doc_title, u.name as created_by_name, u2.name as completed_by_name
       FROM activities a
       LEFT JOIN documents d ON a.document_id = d.id
-      LEFT JOIN users u ON a.completed_by = u.id
+      LEFT JOIN users u ON a.created_by = u.id
+      LEFT JOIN users u2 ON a.completed_by = u2.id
       WHERE 1=1
     `;
     const params = [];
@@ -1096,7 +1097,7 @@ app.get("/api/activities", requireAuth, async (req, res) => {
       status: a.status, priority: a.priority,
       createdBy: a.created_by_name || a.created_by,
       createdAt: a.created_at?.toISOString?.().split('T')[0],
-      completedBy: a.completed_by, completedAt: a.completed_at?.toISOString?.().split('T')[0]
+      completedBy: a.completed_by_name || a.completed_by, completedAt: a.completed_at?.toISOString?.().split('T')[0]
     })));
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1315,7 +1316,7 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
       contact_method,
       registered_by: req.user.name,
       registration_date: new Date().toISOString().split('T')[0],
-      files: files || []
+      files: (files || []).map(f => ({ name: f.name, url: f.url }))
     });
   } catch (error) {
     console.error("POST /api/documents/:id/contestations error:", error);
