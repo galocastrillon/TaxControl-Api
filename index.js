@@ -1036,9 +1036,10 @@ app.get("/api/activities", requireAuth, async (req, res) => {
     const maxLimit = Math.min(500, parseInt(limit) || 100);
 
     let query = `
-      SELECT a.*, d.title as doc_title
+      SELECT a.*, d.title as doc_title, u.name as created_by_name
       FROM activities a
       LEFT JOIN documents d ON a.document_id = d.id
+      LEFT JOIN users u ON a.created_by = u.id
       WHERE 1=1
     `;
     const params = [];
@@ -1057,6 +1058,8 @@ app.get("/api/activities", requireAuth, async (req, res) => {
       description: a.description, subDescription: a.sub_description,
       dueDate: a.due_date?.toISOString?.().split('T')[0],
       status: a.status, priority: a.priority,
+      createdBy: a.created_by_name || a.created_by,
+      createdAt: a.created_at?.toISOString?.().split('T')[0],
       completedBy: a.completed_by, completedAt: a.completed_at?.toISOString?.().split('T')[0]
     })));
   } catch (error) {
@@ -1075,7 +1078,7 @@ app.post("/api/activities", requireAuth, async (req, res) => {
       `INSERT INTO activities
        (id, document_id, description, sub_description, due_date, priority, status, created_by, created_at)
        VALUES (?, ?, ?, ?, ?, ?, 'Pending', ?, NOW())`,
-      [id, docId, description, subDescription, dueDate, priority || 'Medium', req.user.id || req.user.name]
+      [id, docId, description, subDescription, dueDate, priority || 'Medium', req.user.user_id]
     );
 
     // Get document info for notifications
