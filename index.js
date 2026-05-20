@@ -1112,9 +1112,9 @@ app.post("/api/activities", requireAuth, async (req, res) => {
     // Insert the activity with audit trail
     await pool.query(
       `INSERT INTO activities
-       (id, document_id, description, sub_description, due_date, priority, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'Pending', NOW())`,
-      [id, docId, description, subDescription, dueDate, priority || 'Medium']
+       (id, document_id, description, sub_description, due_date, priority, status, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'Pending', ?, NOW())`,
+      [id, docId, description, subDescription, dueDate, priority || 'Medium', req.user.user_id]
     );
 
     // Get document info for notifications
