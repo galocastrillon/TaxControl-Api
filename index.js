@@ -553,13 +553,13 @@ app.post("/api/upload", requireAuth, upload.single('file'), async (req, res) => 
 // 📄 GET todos los documentos (con filtros opcionales)
 app.get("/api/documents", requireAuth, async (req, res) => {
   try {
-    const { company_id, authority, page = 1, limit = 20 } = req.query;
+    const { company_id, authority, page = 1, limit = 20, year, exclude_year } = req.query;
     const pageNum = Math.max(1, parseInt(page) || 1);
     const pageSize = Math.min(500, Math.max(5, parseInt(limit) || 20));
     const offset = (pageNum - 1) * pageSize;
 
     // 🚀 Check cache first (60s TTL)
-    const cacheKey = `docs:${company_id || 'all'}:${authority || 'all'}:${pageNum}:${pageSize}`;
+    const cacheKey = `docs:${company_id || 'all'}:${authority || 'all'}:${pageNum}:${pageSize}:${year || 'all'}:${exclude_year || 'none'}`;
     const cached = getCachedDocs(cacheKey);
     if (cached) return res.json(cached);
 
@@ -578,7 +578,6 @@ app.get("/api/documents", requireAuth, async (req, res) => {
     const params = [];
     const countParams = [];
 
-    // Filtro por company_id si se proporciona
     if (company_id && company_id !== 'Todas') {
       query += ` AND d.company_id = ?`;
       countQuery += ` AND d.company_id = ?`;
@@ -586,7 +585,6 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       countParams.push(company_id);
     }
 
-    // Filtro por authority si se proporciona (case-insensitive comparison)
     if (authority && authority !== 'Todas') {
       query += ` AND d.authority LIKE ?`;
       countQuery += ` AND d.authority LIKE ?`;
@@ -594,7 +592,23 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       countParams.push(`%${authority}%`);
     }
 
-    query += ` ORDER BY d.created_at DESC LIMIT ? OFFSET ?`;
+    // 🚀 Filter by specific year (for incremental loading)
+    if (year) {
+      query += ` AND YEAR(d.notification_date) = ?`;
+      countQuery += ` AND YEAR(d.notification_date) = ?`;
+      params.push(parseInt(year));
+      countParams.push(parseInt(year));
+    }
+
+    // 🚀 Exclude a specific year (to load everything except the first-loaded year)
+    if (exclude_year) {
+      query += ` AND YEAR(d.notification_date) != ?`;
+      countQuery += ` AND YEAR(d.notification_date) != ?`;
+      params.push(parseInt(exclude_year));
+      countParams.push(parseInt(exclude_year));
+    }
+
+    query += ` ORDER BY d.notification_date DESC LIMIT ? OFFSET ?`;
     params.push(pageSize, offset);
 
     // 🚀 Execute count and main query in parallel
