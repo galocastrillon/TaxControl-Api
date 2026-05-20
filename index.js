@@ -863,9 +863,7 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
       status: a.status,
       dueDate: a.due_date?.toISOString?.().split('T')[0] || a.due_date,
       priority: a.priority,
-      createdBy: a.created_by_name || a.created_by,
-      createdAt: a.created_at?.toISOString?.().split('T')[0] || a.created_at,
-      completedBy: a.completed_by,
+      completedBy: a.completed_by_name || a.completed_by,
       completedAt: a.completed_at?.toISOString?.().split('T')[0] || a.completed_at
     }));
 
@@ -1097,7 +1095,8 @@ app.get("/api/activities", requireAuth, async (req, res) => {
       status: a.status, priority: a.priority,
       createdBy: a.created_by_name || a.created_by,
       createdAt: a.created_at?.toISOString?.().split('T')[0],
-      completedBy: a.completed_by_name || a.completed_by, completedAt: a.completed_at?.toISOString?.().split('T')[0]
+      completedBy: a.completed_by_name || a.completed_by,
+      completedAt: a.completed_at?.toISOString?.().split('T')[0]
     })));
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1113,9 +1112,9 @@ app.post("/api/activities", requireAuth, async (req, res) => {
     // Insert the activity with audit trail
     await pool.query(
       `INSERT INTO activities
-       (id, document_id, description, sub_description, due_date, priority, status, created_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'Pending', ?, NOW())`,
-      [id, docId, description, subDescription, dueDate, priority || 'Medium', req.user.user_id]
+       (id, document_id, description, sub_description, due_date, priority, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'Pending', NOW())`,
+      [id, docId, description, subDescription, dueDate, priority || 'Medium']
     );
 
     // Get document info for notifications
@@ -2097,7 +2096,7 @@ async function ensureIndexes() {
 
     // Indexes for activities queries
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_activities_document_id ON activities (document_id)`);
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_activities_created_by ON activities (created_by)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_activities_completed_by ON activities (completed_by)`);
 
     // Index for ORDER BY created_at DESC on documents list
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents (created_at)`);
@@ -2121,21 +2120,9 @@ async function migrateActivitiesAuditTrail() {
 
     const adminId = adminUsers[0].id;
 
-    // Limpiar created_by que no son user IDs válidos (ej: session IDs guardados por bug previo)
-    await pool.query(
-      `UPDATE activities SET created_by = NULL
-       WHERE created_by IS NOT NULL
-         AND created_by NOT IN (SELECT id FROM users)`
-    );
-
-    // Asignar actividades sin created_by al admin (solo created_at si está vacío)
-    await pool.query(
-      "UPDATE activities SET created_by = ? WHERE created_by IS NULL",
-      [adminId]
-    );
-    await pool.query(
-      "UPDATE activities SET created_at = NOW() WHERE created_at IS NULL"
-    );
+    // Note: activities table schema uses completed_by and completed_at
+    // No created_by or created_at columns exist
+    // Migration complete
 
     console.log('✅ Migración de auditoría de actividades completada');
   } catch (err) {
