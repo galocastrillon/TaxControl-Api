@@ -1279,7 +1279,7 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
       contact_method,
       registered_by: req.user.name,
       registration_date: new Date().toISOString().split('T')[0],
-      files: files || []
+      files: (files || []).map(f => ({ name: f.name, url: f.url }))
     });
   } catch (error) {
     console.error("POST /api/documents/:id/contestations error:", error);
