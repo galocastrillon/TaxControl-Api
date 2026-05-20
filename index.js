@@ -863,9 +863,7 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
       status: a.status,
       dueDate: a.due_date?.toISOString?.().split('T')[0] || a.due_date,
       priority: a.priority,
-      createdBy: a.created_by_name || a.created_by,
-      createdAt: a.created_at?.toISOString?.().split('T')[0] || a.created_at,
-      completedBy: a.completed_by,
+      completedBy: a.completed_by_name || a.completed_by,
       completedAt: a.completed_at?.toISOString?.().split('T')[0] || a.completed_at
     }));
 
@@ -1094,9 +1092,8 @@ app.get("/api/activities", requireAuth, async (req, res) => {
       description: a.description, subDescription: a.sub_description,
       dueDate: a.due_date?.toISOString?.().split('T')[0],
       status: a.status, priority: a.priority,
-      createdBy: a.created_by_name || a.created_by,
-      createdAt: a.created_at?.toISOString?.().split('T')[0],
-      completedBy: a.completed_by, completedAt: a.completed_at?.toISOString?.().split('T')[0]
+      completedBy: a.completed_by_name || a.completed_by,
+      completedAt: a.completed_at?.toISOString?.().split('T')[0]
     })));
   } catch (error) {
     res.status(500).json({ error: error.message });
