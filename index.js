@@ -1063,7 +1063,7 @@ app.delete("/api/documents/:id", requireAuth, async (req, res) => {
   }
 });
 
-// 📋 GET actividades
+// 📋 GET actividades (fetch all activities with proper field mapping)
 app.get("/api/activities", requireAuth, async (req, res) => {
   try {
     const { docId, limit = 100 } = req.query;
