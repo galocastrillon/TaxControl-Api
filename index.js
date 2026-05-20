@@ -2117,12 +2117,9 @@ async function migrateActivitiesAuditTrail() {
 
     const adminId = adminUsers[0].id;
 
-    // Note: created_by column doesn't exist in activities table schema
-    // Activities use completed_by instead for audit trail
-    // Ensure all activities have a created_at timestamp
-    await pool.query(
-      "UPDATE activities SET created_at = NOW() WHERE created_at IS NULL"
-    );
+    // Note: activities table schema uses completed_by and completed_at
+    // No created_by or created_at columns exist
+    // Migration complete
 
     console.log('✅ Migración de auditoría de actividades completada');
   } catch (err) {
