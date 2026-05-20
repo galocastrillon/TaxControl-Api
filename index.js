@@ -790,12 +790,12 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
         );
         return {
           id: c.id,
-          date: c.presentation_date?.toISOString().split('T')[0],
+          date: c.presentation_date?.toISOString?.().split('T')[0],
           authority: c.authority_received,
           notes: c.notes,
           contact_method: c.contact_method,
           registered_by: c.registered_by_name || c.registered_by,
-          registration_date: c.registration_date?.toISOString().split('T')[0],
+          registration_date: c.registration_date?.toISOString?.().split('T')[0],
           files: files || []
         };
       })
@@ -805,15 +805,15 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
       id: d.id, title: d.title, trarniteNumber: d.trarnite_number,
       company: d.company_id || d.company_name, authority: d.authority,
       department: d.department,
-      notificationDate: d.notification_date?.toISOString().split('T')[0],
+      notificationDate: d.notification_date?.toISOString?.().split('T')[0],
       daysLimit: d.days_limit, dayType: d.day_type,
-      dueDate: d.due_date?.toISOString().split('T')[0],
+      dueDate: d.due_date?.toISOString?.().split('T')[0],
       status: d.status, summaryEs: d.summary_es, summaryCn: d.summary_cn,
       fileName: d.file_name, fileUrl: d.file_url, relatedDoc: d.related_doc_id,
       createdBy: d.created_by_name || d.created_by,
-      createdAt: d.created_at?.toISOString().split('T')[0],
+      createdAt: d.created_at?.toISOString?.().split('T')[0],
       lastEditedBy: d.last_edited_by_name || d.last_edited_by,
-      lastEditedAt: d.last_edited_at?.toISOString().split('T')[0],
+      lastEditedAt: d.last_edited_at?.toISOString?.().split('T')[0],
       contestations: contestationsWithFiles,
       attachments,
       activities
@@ -993,9 +993,9 @@ app.get("/api/activities", requireAuth, async (req, res) => {
     res.json(rows.map(a => ({
       id: a.id, docId: a.document_id, docTitle: a.doc_title,
       description: a.description, subDescription: a.sub_description,
-      dueDate: a.due_date?.toISOString().split('T')[0],
+      dueDate: a.due_date?.toISOString?.().split('T')[0],
       status: a.status, priority: a.priority,
-      completedBy: a.completed_by, completedAt: a.completed_at
+      completedBy: a.completed_by, completedAt: a.completed_at?.toISOString?.().split('T')[0]
     })));
   } catch (error) {
     res.status(500).json({ error: error.message });
