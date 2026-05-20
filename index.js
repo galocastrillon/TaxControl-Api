@@ -1082,7 +1082,7 @@ app.post("/api/activities", requireAuth, async (req, res) => {
       `INSERT INTO activities
        (id, document_id, description, sub_description, due_date, priority, status, created_by, created_at)
        VALUES (?, ?, ?, ?, ?, ?, 'Pending', ?, NOW())`,
-      [id, docId, description, subDescription, dueDate, priority || 'Medium', req.user.id || req.user.name]
+      [id, docId, description, subDescription, dueDate, priority || 'Medium', req.user.user_id]
     );
 
     // Get document info for notifications
@@ -2088,10 +2088,20 @@ async function migrateActivitiesAuditTrail() {
 
     const adminId = adminUsers[0].id;
 
-    // Actualizar actividades sin created_by
+    // Limpiar created_by que no son user IDs válidos (ej: session IDs guardados por bug previo)
     await pool.query(
-      "UPDATE activities SET created_by = ?, created_at = NOW() WHERE created_by IS NULL",
+      `UPDATE activities SET created_by = NULL
+       WHERE created_by IS NOT NULL
+         AND created_by NOT IN (SELECT id FROM users)`
+    );
+
+    // Asignar actividades sin created_by al admin (solo created_at si está vacío)
+    await pool.query(
+      "UPDATE activities SET created_by = ? WHERE created_by IS NULL",
       [adminId]
+    );
+    await pool.query(
+      "UPDATE activities SET created_at = NOW() WHERE created_at IS NULL"
     );
 
     console.log('✅ Migración de auditoría de actividades completada');
