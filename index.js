@@ -26,7 +26,7 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 
 // 2️⃣ Crear app
 const app = express();
-app.use(compression());
+app.use(compression()); // ⚡ Gzip compression for all responses
 app.use(cors({
   origin: [
     'http://taxcontrolapp.192.168.60.109.sslip.io',
@@ -38,6 +38,18 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
+
+// 🚀 Simple in-memory cache for documents list (60s TTL)
+const docsCache = new Map();
+const DOCS_CACHE_TTL = 60 * 1000;
+const getCachedDocs = (key) => {
+  const entry = docsCache.get(key);
+  if (!entry) return null;
+  if (entry.cachedAt + DOCS_CACHE_TTL < Date.now()) { docsCache.delete(key); return null; }
+  return entry.data;
+};
+const setCachedDocs = (key, data) => docsCache.set(key, { data, cachedAt: Date.now() });
+const invalidateDocsCache = () => docsCache.clear();
 
 // Servir archivos estáticos de uploads
 app.use('/api/files', express.static(UPLOAD_DIR));
@@ -562,10 +574,15 @@ app.post("/api/upload", requireAuth, upload.single('file'), async (req, res) => 
 // 📄 GET todos los documentos (con filtros opcionales)
 app.get("/api/documents", requireAuth, async (req, res) => {
   try {
-    const { company_id, authority, page = 1, limit = 20 } = req.query;
+    const { company_id, authority, page = 1, limit = 20, year, exclude_year } = req.query;
     const pageNum = Math.max(1, parseInt(page) || 1);
     const pageSize = Math.min(500, Math.max(5, parseInt(limit) || 20));
     const offset = (pageNum - 1) * pageSize;
+
+    // 🚀 Check cache first (60s TTL)
+    const cacheKey = `docs:${company_id || 'all'}:${authority || 'all'}:${pageNum}:${pageSize}:${year || 'all'}:${exclude_year || 'none'}`;
+    const cached = getCachedDocs(cacheKey);
+    if (cached) return res.json(cached);
 
     let query = `
       SELECT d.id, d.title, d.trarnite_number, d.document_number, d.company_id, d.authority,
@@ -582,7 +599,6 @@ app.get("/api/documents", requireAuth, async (req, res) => {
     const params = [];
     const countParams = [];
 
-    // Filtro por company_id si se proporciona
     if (company_id && company_id !== 'Todas') {
       query += ` AND d.company_id = ?`;
       countQuery += ` AND d.company_id = ?`;
@@ -590,7 +606,6 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       countParams.push(company_id);
     }
 
-    // Filtro por authority si se proporciona (case-insensitive comparison)
     if (authority && authority !== 'Todas') {
       query += ` AND d.authority LIKE ?`;
       countQuery += ` AND d.authority LIKE ?`;
@@ -598,9 +613,26 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       countParams.push(`%${authority}%`);
     }
 
-    query += ` ORDER BY d.created_at DESC LIMIT ? OFFSET ?`;
+    // 🚀 Filter by specific year (for incremental loading)
+    if (year) {
+      query += ` AND YEAR(d.notification_date) = ?`;
+      countQuery += ` AND YEAR(d.notification_date) = ?`;
+      params.push(parseInt(year));
+      countParams.push(parseInt(year));
+    }
+
+    // 🚀 Exclude a specific year (to load everything except the first-loaded year)
+    if (exclude_year) {
+      query += ` AND YEAR(d.notification_date) != ?`;
+      countQuery += ` AND YEAR(d.notification_date) != ?`;
+      params.push(parseInt(exclude_year));
+      countParams.push(parseInt(exclude_year));
+    }
+
+    query += ` ORDER BY d.notification_date DESC LIMIT ? OFFSET ?`;
     params.push(pageSize, offset);
 
+    // 🚀 Execute count and main query in parallel
     const [[rows], [countRows]] = await Promise.all([
       pool.query(query, params),
       pool.query(countQuery, countParams)
@@ -631,13 +663,15 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       contestations: []
     }));
 
-    res.json({
+    const response = {
       documents: docs,
       total: total,
       page: pageNum,
       limit: pageSize,
       hasMore: pageNum < Math.ceil(total / pageSize)
-    });
+    };
+    setCachedDocs(cacheKey, response);
+    res.json(response);
   } catch (error) {
     console.error("GET /api/documents error:", error);
     res.status(500).json({ error: error.message });
@@ -701,6 +735,22 @@ app.get("/api/documents/dashboard", requireAuth, async (req, res) => {
       if (dueDate < today) overdue.push(doc);
       else if (dueDate <= next7Str) upcoming7.push(doc);
       else upcoming15.push(doc);
+    }
+
+    // Debug logging for date inconsistencies
+    if (overdue.length > 0) console.log('[Dashboard] Overdue docs:', overdue.map(d => ({ id: d.id, title: d.title, dueDate: d.dueDate })));
+    if (upcoming7.length > 0) console.log('[Dashboard] Upcoming7 docs:', upcoming7.map(d => ({ id: d.id, title: d.title, dueDate: d.dueDate })));
+    if (upcoming15.length > 0) console.log('[Dashboard] Upcoming15 docs:', upcoming15.map(d => ({ id: d.id, title: d.title, dueDate: d.dueDate })));
+
+    // Check for duplicate IDs across categories
+    const allIds = [...overdue.map(d => d.id), ...upcoming7.map(d => d.id), ...upcoming15.map(d => d.id)];
+    const uniqueIds = new Set(allIds);
+    if (allIds.length !== uniqueIds.size) {
+      console.warn('[Dashboard] WARNING: Duplicate document IDs found across categories!');
+      const idCounts = {};
+      allIds.forEach(id => idCounts[id] = (idCounts[id] || 0) + 1);
+      const duplicates = Object.entries(idCounts).filter(([_, count]) => count > 1);
+      console.warn('[Dashboard] Duplicates:', duplicates);
     }
 
     res.json({ stats, statusBreakdown, byDeadline: { overdue, upcoming7, upcoming15 } });
@@ -807,6 +857,26 @@ app.get("/api/documents/by-deadline", requireAuth, async (req, res) => {
   } catch (error) {
     console.error('Error fetching by-deadline:', error);
     res.json({ overdue: [], upcoming7: [], upcoming15: [] });
+  }
+});
+
+// 🔍 Diagnostic endpoint to find duplicate/similar documents by title pattern
+app.get("/api/documents/search/duplicates", requireAuth, async (req, res) => {
+  try {
+    const { title } = req.query;
+    if (!title) return res.status(400).json({ error: "title parameter required" });
+
+    const [docs] = await pool.query(`
+      SELECT id, title, due_date, status, created_at
+      FROM documents
+      WHERE title LIKE ?
+      ORDER BY title, due_date ASC
+    `, [`%${title}%`]);
+
+    res.json({ found: docs.length, documents: docs });
+  } catch (error) {
+    console.error('Error searching duplicates:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -946,6 +1016,7 @@ app.post("/api/documents", requireAuth, async (req, res) => {
       d.status || "Inicializado", d.summaryEs || '', d.summaryCn || '',
       d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.user_id
     ]);
+    invalidateDocsCache();
     res.status(201).json({ id, ...d });
   } catch (error) {
     console.error("POST /api/documents error:", error);
@@ -1045,6 +1116,7 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
       await sendNotificationEmail(recipients, subject, htmlContent, id, 'modification');
     }
 
+    invalidateDocsCache();
     res.json({ ok: true });
   } catch (error) {
     console.error("PUT /api/documents error:", error);
@@ -1056,6 +1128,7 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
 app.delete("/api/documents/:id", requireAuth, async (req, res) => {
   try {
     await pool.query("DELETE FROM documents WHERE id = ?", [req.params.id]);
+    invalidateDocsCache();
     res.json({ ok: true });
   } catch (error) {
     console.error("DELETE /api/documents error:", error);
