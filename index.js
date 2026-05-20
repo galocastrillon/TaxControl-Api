@@ -2076,7 +2076,42 @@ async function ensureIndexes() {
   }
 }
 
+// 🔄 Migración: Poblar actividades antiguas con created_by/created_at
+async function migrateActivitiesAuditTrail() {
+  try {
+    // Obtener primer admin para asignar a actividades antiguas
+    const [adminUsers] = await pool.query("SELECT id FROM users WHERE role = 'Admin' LIMIT 1");
+    if (adminUsers.length === 0) {
+      console.log('⚠️ No hay usuarios Admin para migración de actividades');
+      return;
+    }
+
+    const adminId = adminUsers[0].id;
+
+    // Limpiar created_by que no son user IDs válidos (ej: session IDs guardados por bug previo)
+    await pool.query(
+      `UPDATE activities SET created_by = NULL
+       WHERE created_by IS NOT NULL
+         AND created_by NOT IN (SELECT id FROM users)`
+    );
+
+    // Asignar actividades sin created_by al admin (solo created_at si está vacío)
+    await pool.query(
+      "UPDATE activities SET created_by = ? WHERE created_by IS NULL",
+      [adminId]
+    );
+    await pool.query(
+      "UPDATE activities SET created_at = NOW() WHERE created_at IS NULL"
+    );
+
+    console.log('✅ Migración de auditoría de actividades completada');
+  } catch (err) {
+    console.warn('⚠️ Error en migración de actividades (no crítico):', err.message);
+  }
+}
+
 app.listen(PORT, async () => {
   console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
   await ensureIndexes();
+  await migrateActivitiesAuditTrail();
 });
