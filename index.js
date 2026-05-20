@@ -9,6 +9,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import multer from "multer";
+import compression from "compression";
 
 // 1️⃣ Cargar variables de entorno
 dotenv.config();
@@ -25,6 +26,7 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 
 // 2️⃣ Crear app
 const app = express();
+app.use(compression());
 app.use(cors({
   origin: [
     'http://taxcontrolapp.192.168.60.109.sslip.io',
@@ -338,28 +340,47 @@ app.get("/api/db-test", async (_req, res) => {
   }
 });
 
-// 6️⃣ Middleware verificar sesión
+// 6️⃣ Middleware verificar sesión (con cache en memoria, TTL 5 min)
+const sessionCache = new Map();
+const SESSION_CACHE_TTL = 5 * 60 * 1000;
+
 const requireAuth = async (req, res, next) => {
   const auth = req.headers.authorization;
   if (!auth?.startsWith("Bearer "))
     return res.status(401).json({ error: "No autorizado" });
   const token = auth.slice(7);
+
+  const cached = sessionCache.get(token);
+  if (cached && cached.cachedAt + SESSION_CACHE_TTL > Date.now()) {
+    req.user = cached.user;
+    return next();
+  }
+
   try {
     const [rows] = await pool.query(
-      `SELECT s.*, u.name, u.email, u.avatar_url 
-       FROM sessions s 
-       JOIN users u ON s.user_id = u.id 
+      `SELECT s.*, u.name, u.email, u.avatar_url
+       FROM sessions s
+       JOIN users u ON s.user_id = u.id
        WHERE s.token = ? AND s.expires_at > NOW()`,
       [token]
     );
     if (rows.length === 0)
       return res.status(401).json({ error: "Sesión expirada o inválida" });
     req.user = rows[0];
+    sessionCache.set(token, { user: rows[0], cachedAt: Date.now() });
     next();
   } catch (error) {
     res.status(500).json({ error: "Error verificando sesión" });
   }
 };
+
+// Limpia sesiones expiradas del cache cada 10 minutos
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, entry] of sessionCache.entries()) {
+    if (entry.cachedAt + SESSION_CACHE_TTL <= now) sessionCache.delete(token);
+  }
+}, 10 * 60 * 1000).unref?.();
 
 // 7️⃣ Login
 app.post("/api/auth/login", async (req, res) => {
@@ -394,7 +415,9 @@ app.post("/api/auth/login", async (req, res) => {
 app.post("/api/auth/logout", async (req, res) => {
   const auth = req.headers.authorization;
   if (auth?.startsWith("Bearer ")) {
-    await pool.query("DELETE FROM sessions WHERE token = ?", [auth.slice(7)]);
+    const token = auth.slice(7);
+    await pool.query("DELETE FROM sessions WHERE token = ?", [token]);
+    sessionCache.delete(token);
   }
   res.json({ ok: true });
 });
@@ -846,14 +869,24 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
       completedAt: a.completed_at?.toISOString?.().split('T')[0] || a.completed_at
     }));
 
-    // 🚀 Cargar archivos de contestaciones en paralelo también
-    const contestationsWithFiles = await Promise.all(
-      contestations.map(async (c) => {
-        const [files] = await pool.query(
-          "SELECT * FROM contestation_files WHERE contestation_id = ? LIMIT 50",
-          [c.id]
-        );
-        return {
+    // 🚀 Cargar TODOS los archivos en UNA sola query (evita N+1)
+    let filesByContestation = {};
+    if (contestations.length > 0) {
+      const cIds = contestations.map(c => c.id);
+      const placeholders = cIds.map(() => '?').join(',');
+      const [allFiles] = await pool.query(
+        `SELECT * FROM contestation_files WHERE contestation_id IN (${placeholders})`,
+        cIds
+      );
+      filesByContestation = allFiles.reduce((acc, f) => {
+        (acc[f.contestation_id] = acc[f.contestation_id] || []).push(f);
+        return acc;
+      }, {});
+    }
+
+    const contestationsWithFiles = contestations.map((c) => {
+      const files = filesByContestation[c.id] || [];
+      return {
           id: c.id,
           date: c.presentation_date?.toISOString?.().split('T')[0],
           authority: c.authority_received,
@@ -863,8 +896,7 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
           registration_date: c.registration_date?.toISOString?.().split('T')[0],
           files: files || []
         };
-      })
-    );
+    });
 
     res.json({
       id: d.id, title: d.title, trarniteNumber: d.trarnite_number,
