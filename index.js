@@ -678,6 +678,22 @@ app.get("/api/documents/dashboard", requireAuth, async (req, res) => {
       else upcoming15.push(doc);
     }
 
+    // Debug logging for date inconsistencies
+    if (overdue.length > 0) console.log('[Dashboard] Overdue docs:', overdue.map(d => ({ id: d.id, title: d.title, dueDate: d.dueDate })));
+    if (upcoming7.length > 0) console.log('[Dashboard] Upcoming7 docs:', upcoming7.map(d => ({ id: d.id, title: d.title, dueDate: d.dueDate })));
+    if (upcoming15.length > 0) console.log('[Dashboard] Upcoming15 docs:', upcoming15.map(d => ({ id: d.id, title: d.title, dueDate: d.dueDate })));
+
+    // Check for duplicate IDs across categories
+    const allIds = [...overdue.map(d => d.id), ...upcoming7.map(d => d.id), ...upcoming15.map(d => d.id)];
+    const uniqueIds = new Set(allIds);
+    if (allIds.length !== uniqueIds.size) {
+      console.warn('[Dashboard] WARNING: Duplicate document IDs found across categories!');
+      const idCounts = {};
+      allIds.forEach(id => idCounts[id] = (idCounts[id] || 0) + 1);
+      const duplicates = Object.entries(idCounts).filter(([_, count]) => count > 1);
+      console.warn('[Dashboard] Duplicates:', duplicates);
+    }
+
     res.json({ stats, statusBreakdown, byDeadline: { overdue, upcoming7, upcoming15 } });
   } catch (error) {
     console.error('Error fetching dashboard data:', error);
