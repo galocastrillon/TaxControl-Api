@@ -764,7 +764,22 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
     const d = docRows[0][0];
     const contestations = contestationRows[0];
     const attachments = attachmentRows[0];
-    const activities = activityRows[0];
+    const rawActivities = activityRows[0];
+
+    // 📋 Map activities with proper date formatting for audit trail
+    const activities = rawActivities.map((a: any) => ({
+      id: a.id,
+      docId: a.document_id,
+      description: a.description,
+      subDescription: a.sub_description,
+      status: a.status,
+      dueDate: a.due_date?.toISOString?.().split('T')[0] || a.due_date,
+      priority: a.priority,
+      createdBy: a.created_by,
+      createdAt: a.created_at?.toISOString?.().split('T')[0] || a.created_at,
+      completedBy: a.completed_by,
+      completedAt: a.completed_at?.toISOString?.().split('T')[0] || a.completed_at
+    }));
 
     // 🚀 Cargar archivos de contestaciones en paralelo también
     const contestationsWithFiles = await Promise.all(
@@ -993,12 +1008,12 @@ app.post("/api/activities", requireAuth, async (req, res) => {
   try {
     const id = `a${Date.now()}`;
 
-    // Insert the activity
+    // Insert the activity with audit trail
     await pool.query(
       `INSERT INTO activities
-       (id, document_id, description, sub_description, due_date, priority, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'Pending')`,
-      [id, docId, description, subDescription, dueDate, priority || 'Medium']
+       (id, document_id, description, sub_description, due_date, priority, status, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'Pending', ?, NOW())`,
+      [id, docId, description, subDescription, dueDate, priority || 'Medium', req.user.id || req.user.name]
     );
 
     // Get document info for notifications
@@ -1012,7 +1027,7 @@ app.post("/api/activities", requireAuth, async (req, res) => {
       await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, docId, 'activity_added');
     }
 
-    res.status(201).json({ id, docId, description, subDescription, dueDate, priority: priority || 'Medium', status: 'Pending' });
+    res.status(201).json({ id, docId, description, subDescription, dueDate, priority: priority || 'Medium', status: 'Pending', createdBy: req.user.name, createdAt: new Date().toISOString().split('T')[0] });
   } catch (error) {
     console.error("POST /api/activities error:", error);
     res.status(500).json({ error: error.message });
