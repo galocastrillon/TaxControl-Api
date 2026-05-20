@@ -486,7 +486,7 @@ app.get("/api/documents", requireAuth, async (req, res) => {
     let query = `
       SELECT d.id, d.title, d.trarnite_number, d.document_number, d.company_id, d.authority,
              d.department, d.notification_date, d.days_limit, d.day_type, d.due_date, d.status,
-             d.summary_es, d.summary_cn, d.file_name, d.file_url, d.related_doc,
+             d.summary_es, d.summary_cn, d.file_name, d.file_url, d.related_doc_id,
              d.created_by, u.name as created_by_name, d.created_at,
              d.last_edited_by, u2.name as last_edited_by_name, d.last_edited_at
       FROM documents d
@@ -529,19 +529,19 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       company: d.company_id || d.company_name,
       authority: d.authority,
       department: d.department,
-      notificationDate: d.notification_date?.toISOString().split('T')[0],
+      notificationDate: d.notification_date?.toISOString?.().split('T')[0],
       daysLimit: d.days_limit,
       dayType: d.day_type,
-      dueDate: d.due_date?.toISOString().split('T')[0],
+      dueDate: d.due_date?.toISOString?.().split('T')[0],
       status: d.status,
       summaryEs: d.summary_es,
       summaryCn: d.summary_cn,
       fileName: d.file_name,
       fileUrl: d.file_url,
       createdBy: d.created_by_name || d.created_by,
-      createdAt: d.created_at?.toISOString().split('T')[0],
+      createdAt: d.created_at?.toISOString?.().split('T')[0],
       lastEditedBy: d.last_edited_by_name || d.last_edited_by,
-      lastEditedAt: d.last_edited_at?.toISOString().split('T')[0],
+      lastEditedAt: d.last_edited_at?.toISOString?.().split('T')[0],
       contestations: []
     }));
 
@@ -925,7 +925,8 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
       if (oldDoc.title !== d.title) changedFields.push(`Título: ${oldDoc.title} → ${d.title}`);
       if (oldDoc.authority !== d.authority) changedFields.push(`Autoridad: ${oldDoc.authority} → ${d.authority}`);
       if (oldDoc.department !== d.department) changedFields.push(`Departamento: ${oldDoc.department || 'N/A'} → ${d.department || 'N/A'}`);
-      if (oldDoc.due_date.toISOString().split('T')[0] !== dueDate) changedFields.push(`Fecha de Vencimiento: ${oldDoc.due_date.toISOString().split('T')[0]} → ${dueDate}`);
+      const oldDueDate = oldDoc.due_date?.toISOString?.().split('T')[0] || oldDoc.due_date;
+      if (oldDueDate !== dueDate) changedFields.push(`Fecha de Vencimiento: ${oldDueDate} → ${dueDate}`);
 
       const htmlContent = `
         <html>
@@ -1146,12 +1147,12 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
         );
         return {
           id: c.id,
-          date: c.presentation_date?.toISOString().split('T')[0],
+          date: c.presentation_date?.toISOString?.().split('T')[0],
           authority: c.authority_received,
           notes: c.notes,
           contact_method: c.contact_method,
           registered_by: c.registered_by_name || c.registered_by,
-          registration_date: c.registration_date?.toISOString().split('T')[0],
+          registration_date: c.registration_date?.toISOString?.().split('T')[0],
           files: (files || []).map(f => ({ name: f.file_name, url: f.file_url }))
         };
       })
