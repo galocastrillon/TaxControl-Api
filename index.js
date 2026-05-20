@@ -71,7 +71,9 @@ const pool = mysql.createPool({
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  connectionLimit: 10,
+  connectionLimit: 50,
+  idleTimeout: 30000,
+  enableKeepAlive: true
 });
 
 // 🌐 Email Template Helper - Multi-language Support (Spanish + Simplified Chinese)
@@ -299,9 +301,30 @@ app.get("/", (_req, res) => {
   res.json({ status: "ok", message: "TaxControl-Api is running", version: "2.0" });
 });
 
-// 4️⃣ Endpoint de salud
-app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok" });
+// 4️⃣ Endpoint de salud (con info de conexión)
+app.get("/api/health", async (_req, res) => {
+  let dbStatus = "disconnected";
+  let dbVersion = null;
+  let documentCount = 0;
+
+  try {
+    const [rows] = await pool.query("SELECT VERSION() AS version");
+    dbStatus = "connected";
+    dbVersion = rows[0].version;
+
+    // Try to get document count
+    const [countRows] = await pool.query("SELECT COUNT(*) as count FROM documents");
+    documentCount = countRows[0]?.count || 0;
+  } catch (error) {
+    console.error("Health check DB error:", error);
+  }
+
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    database: { status: dbStatus, version: dbVersion, documents: documentCount },
+    api: "TaxControl-Api v2.0"
+  });
 });
 
 // 5️⃣ Endpoint de prueba DB
@@ -522,9 +545,12 @@ app.get("/api/documents", requireAuth, async (req, res) => {
     const offset = (pageNum - 1) * pageSize;
 
     let query = `
-      SELECT d.*, c.name as company_name, u.name as created_by_name, u2.name as last_edited_by_name
+      SELECT d.id, d.title, d.trarnite_number, d.document_number, d.company_id, d.authority,
+             d.department, d.notification_date, d.days_limit, d.day_type, d.due_date, d.status,
+             d.summary_es, d.summary_cn, d.file_name, d.file_url, d.related_doc_id,
+             d.created_by, u.name as created_by_name, d.created_at,
+             d.last_edited_by, u2.name as last_edited_by_name, d.last_edited_at
       FROM documents d
-      LEFT JOIN companies c ON d.company_id = c.id
       LEFT JOIN users u ON d.created_by = u.id
       LEFT JOIN users u2 ON d.last_edited_by = u2.id
       WHERE 1=1
@@ -541,12 +567,12 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       countParams.push(company_id);
     }
 
-    // Filtro por authority si se proporciona
+    // Filtro por authority si se proporciona (case-insensitive comparison)
     if (authority && authority !== 'Todas') {
-      query += ` AND UPPER(TRIM(d.authority)) = UPPER(TRIM(?))`;
-      countQuery += ` AND UPPER(TRIM(d.authority)) = UPPER(TRIM(?))`;
-      params.push(authority);
-      countParams.push(authority);
+      query += ` AND d.authority LIKE ?`;
+      countQuery += ` AND d.authority LIKE ?`;
+      params.push(`%${authority}%`);
+      countParams.push(`%${authority}%`);
     }
 
     query += ` ORDER BY d.created_at DESC LIMIT ? OFFSET ?`;
@@ -564,34 +590,198 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       company: d.company_id || d.company_name,
       authority: d.authority,
       department: d.department,
-      notificationDate: d.notification_date?.toISOString().split('T')[0],
+      notificationDate: d.notification_date?.toISOString?.().split('T')[0],
       daysLimit: d.days_limit,
       dayType: d.day_type,
-      dueDate: d.due_date?.toISOString().split('T')[0],
+      dueDate: d.due_date?.toISOString?.().split('T')[0],
       status: d.status,
       summaryEs: d.summary_es,
       summaryCn: d.summary_cn,
       fileName: d.file_name,
       fileUrl: d.file_url,
       createdBy: d.created_by_name || d.created_by,
-      createdAt: d.created_at?.toISOString().split('T')[0],
+      createdAt: d.created_at?.toISOString?.().split('T')[0],
       lastEditedBy: d.last_edited_by_name || d.last_edited_by,
-      lastEditedAt: d.last_edited_at?.toISOString().split('T')[0],
+      lastEditedAt: d.last_edited_at?.toISOString?.().split('T')[0],
       contestations: []
     }));
 
     res.json({
-      data: docs,
-      pagination: {
-        page: pageNum,
-        limit: pageSize,
-        total: total,
-        totalPages: Math.ceil(total / pageSize)
-      }
+      documents: docs,
+      total: total,
+      page: pageNum,
+      limit: pageSize,
+      hasMore: pageNum < Math.ceil(total / pageSize)
     });
   } catch (error) {
     console.error("GET /api/documents error:", error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// 🚀 GET /api/documents/dashboard - Combined endpoint: stats + breakdown + by-deadline in ONE round-trip
+app.get("/api/documents/dashboard", requireAuth, async (req, res) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const next7 = new Date(); next7.setDate(next7.getDate() + 7);
+    const next7Str = next7.toISOString().split('T')[0];
+    const next15 = new Date(); next15.setDate(next15.getDate() + 15);
+    const next15Str = next15.toISOString().split('T')[0];
+
+    // Run all 3 queries in parallel at the DB level
+    const [statsResult, breakdownResult, deadlineResult] = await Promise.all([
+      // 1. Stats: pure SQL aggregation — no JS row iteration
+      pool.query(`
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN status = 'En progreso' THEN 1 ELSE 0 END) as in_progress,
+          SUM(CASE WHEN status != 'Completado' AND due_date >= ? AND due_date <= ? THEN 1 ELSE 0 END) as upcoming,
+          SUM(CASE WHEN status != 'Completado' AND due_date < ? THEN 1 ELSE 0 END) as overdue
+        FROM documents
+      `, [today, next15Str, today]),
+
+      // 2. Status breakdown: simple GROUP BY
+      pool.query(`SELECT status, COUNT(*) as count FROM documents GROUP BY status ORDER BY count DESC`),
+
+      // 3. Deadline docs: only non-completed within 15 days + overdue
+      pool.query(`
+        SELECT id, title, trarnite_number, due_date, status, company_id, authority, department
+        FROM documents
+        WHERE status != 'Completado'
+          AND due_date IS NOT NULL
+          AND due_date <= ?
+        ORDER BY due_date ASC
+        LIMIT 100
+      `, [next15Str])
+    ]);
+
+    const [statsRows] = statsResult;
+    const [breakdownRows] = breakdownResult;
+    const [deadlineRows] = deadlineResult;
+
+    const stats = {
+      total: Number(statsRows[0].total),
+      inProgress: Number(statsRows[0].in_progress),
+      upcoming: Number(statsRows[0].upcoming),
+      overdue: Number(statsRows[0].overdue)
+    };
+
+    const statusBreakdown = breakdownRows.map(r => ({ status: r.status || 'Sin estado', count: Number(r.count) }));
+
+    const overdue = [], upcoming7 = [], upcoming15 = [];
+    for (const d of deadlineRows) {
+      let dueDate = d.due_date instanceof Date ? d.due_date.toISOString().split('T')[0] : d.due_date;
+      if (!dueDate) continue;
+      const doc = { id: d.id, title: d.title, trarniteNumber: d.trarnite_number, company: d.company_id, authority: d.authority, department: d.department, dueDate, status: d.status };
+      if (dueDate < today) overdue.push(doc);
+      else if (dueDate <= next7Str) upcoming7.push(doc);
+      else upcoming15.push(doc);
+    }
+
+    res.json({ stats, statusBreakdown, byDeadline: { overdue, upcoming7, upcoming15 } });
+  } catch (error) {
+    console.error('Error fetching dashboard data:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 📊 GET Dashboard Statistics (all documents stats)
+app.get("/api/documents/stats", requireAuth, async (req, res) => {
+  try {
+    const [docs] = await pool.query('SELECT status, due_date FROM documents');
+
+    const today = new Date().toISOString().split('T')[0];
+    const upcoming15 = new Date();
+    upcoming15.setDate(upcoming15.getDate() + 15);
+    const upcoming15Str = upcoming15.toISOString().split('T')[0];
+
+    let inProgress = 0;
+    let upcoming = 0;
+    let overdue = 0;
+
+    for (const doc of docs) {
+      if (doc.status === 'En progreso') inProgress++;
+      let dueDate = doc.due_date;
+      if (dueDate instanceof Date) {
+        dueDate = dueDate.toISOString().split('T')[0];
+      }
+      if (dueDate && dueDate < today && doc.status !== 'Completado') overdue++;
+      else if (dueDate && dueDate >= today && dueDate <= upcoming15Str && doc.status !== 'Completado') upcoming++;
+    }
+
+    res.json({ total: docs.length, inProgress, upcoming, overdue });
+  } catch (error) {
+    console.error('Error fetching stats:', error);
+    res.json({ total: 0, inProgress: 0, upcoming: 0, overdue: 0 });
+  }
+});
+
+// 📈 GET Status Breakdown (for pie chart)
+app.get("/api/documents/status-breakdown", requireAuth, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT status, COUNT(*) as count FROM documents GROUP BY status ORDER BY count DESC'
+    );
+    res.json(rows.map((row) => ({ status: row.status || 'Sin estado', count: row.count })));
+  } catch (error) {
+    console.error('Error fetching status breakdown:', error);
+    res.json([]);
+  }
+});
+
+// 📋 GET Documents by Deadline Status
+app.get("/api/documents/by-deadline", requireAuth, async (req, res) => {
+  try {
+    const [allDocs] = await pool.query(`
+      SELECT id, title, trarnite_number, due_date, status, company_id, authority, department,
+             notification_date, days_limit, day_type, file_name, file_url, created_by, created_at
+      FROM documents
+      WHERE status != 'Completado'
+    `);
+
+    const today = new Date().toISOString().split('T')[0];
+    const next7 = new Date();
+    next7.setDate(next7.getDate() + 7);
+    const next7Str = next7.toISOString().split('T')[0];
+    const next15 = new Date();
+    next15.setDate(next15.getDate() + 15);
+    const next15Str = next15.toISOString().split('T')[0];
+
+    const overdue = [];
+    const upcoming7 = [];
+    const upcoming15 = [];
+
+    for (const d of allDocs) {
+      let dueDate = d.due_date;
+      if (dueDate instanceof Date) {
+        dueDate = dueDate.toISOString().split('T')[0];
+      }
+      if (!dueDate) continue;
+
+      const doc = {
+        id: d.id,
+        title: d.title,
+        trarniteNumber: d.trarnite_number,
+        company: d.company_id,
+        authority: d.authority,
+        department: d.department,
+        dueDate,
+        status: d.status
+      };
+
+      if (dueDate < today) {
+        overdue.push(doc);
+      } else if (dueDate >= today && dueDate <= next7Str) {
+        upcoming7.push(doc);
+      } else if (dueDate > next7Str && dueDate <= next15Str) {
+        upcoming15.push(doc);
+      }
+    }
+
+    res.json({ overdue, upcoming7, upcoming15 });
+  } catch (error) {
+    console.error('Error fetching by-deadline:', error);
+    res.json({ overdue: [], upcoming7: [], upcoming15: [] });
   }
 });
 
@@ -635,7 +825,22 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
     const d = docRows[0][0];
     const contestations = contestationRows[0];
     const attachments = attachmentRows[0];
-    const activities = activityRows[0];
+    const rawActivities = activityRows[0];
+
+    // 📋 Map activities with proper date formatting for audit trail
+    const activities = rawActivities.map((a) => ({
+      id: a.id,
+      docId: a.document_id,
+      description: a.description,
+      subDescription: a.sub_description,
+      status: a.status,
+      dueDate: a.due_date?.toISOString?.().split('T')[0] || a.due_date,
+      priority: a.priority,
+      createdBy: a.created_by,
+      createdAt: a.created_at?.toISOString?.().split('T')[0] || a.created_at,
+      completedBy: a.completed_by,
+      completedAt: a.completed_at?.toISOString?.().split('T')[0] || a.completed_at
+    }));
 
     // 🚀 Cargar archivos de contestaciones en paralelo también
     const contestationsWithFiles = await Promise.all(
@@ -646,12 +851,12 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
         );
         return {
           id: c.id,
-          date: c.presentation_date?.toISOString().split('T')[0],
+          date: c.presentation_date?.toISOString?.().split('T')[0],
           authority: c.authority_received,
           notes: c.notes,
           contact_method: c.contact_method,
           registered_by: c.registered_by_name || c.registered_by,
-          registration_date: c.registration_date?.toISOString().split('T')[0],
+          registration_date: c.registration_date?.toISOString?.().split('T')[0],
           files: files || []
         };
       })
@@ -661,15 +866,15 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
       id: d.id, title: d.title, trarniteNumber: d.trarnite_number,
       company: d.company_id || d.company_name, authority: d.authority,
       department: d.department,
-      notificationDate: d.notification_date?.toISOString().split('T')[0],
+      notificationDate: d.notification_date?.toISOString?.().split('T')[0],
       daysLimit: d.days_limit, dayType: d.day_type,
-      dueDate: d.due_date?.toISOString().split('T')[0],
+      dueDate: d.due_date?.toISOString?.().split('T')[0],
       status: d.status, summaryEs: d.summary_es, summaryCn: d.summary_cn,
       fileName: d.file_name, fileUrl: d.file_url, relatedDoc: d.related_doc_id,
       createdBy: d.created_by_name || d.created_by,
-      createdAt: d.created_at?.toISOString().split('T')[0],
+      createdAt: d.created_at?.toISOString?.().split('T')[0],
       lastEditedBy: d.last_edited_by_name || d.last_edited_by,
-      lastEditedAt: d.last_edited_at?.toISOString().split('T')[0],
+      lastEditedAt: d.last_edited_at?.toISOString?.().split('T')[0],
       contestations: contestationsWithFiles,
       attachments,
       activities
@@ -781,7 +986,8 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
       if (oldDoc.title !== d.title) changedFields.push(`Título: ${oldDoc.title} → ${d.title}`);
       if (oldDoc.authority !== d.authority) changedFields.push(`Autoridad: ${oldDoc.authority} → ${d.authority}`);
       if (oldDoc.department !== d.department) changedFields.push(`Departamento: ${oldDoc.department || 'N/A'} → ${d.department || 'N/A'}`);
-      if (oldDoc.due_date.toISOString().split('T')[0] !== dueDate) changedFields.push(`Fecha de Vencimiento: ${oldDoc.due_date.toISOString().split('T')[0]} → ${dueDate}`);
+      const oldDueDate = oldDoc.due_date?.toISOString?.().split('T')[0] || oldDoc.due_date;
+      if (oldDueDate !== dueDate) changedFields.push(`Fecha de Vencimiento: ${oldDueDate} → ${dueDate}`);
 
       const htmlContent = `
         <html>
@@ -849,9 +1055,9 @@ app.get("/api/activities", requireAuth, async (req, res) => {
     res.json(rows.map(a => ({
       id: a.id, docId: a.document_id, docTitle: a.doc_title,
       description: a.description, subDescription: a.sub_description,
-      dueDate: a.due_date?.toISOString().split('T')[0],
+      dueDate: a.due_date?.toISOString?.().split('T')[0],
       status: a.status, priority: a.priority,
-      completedBy: a.completed_by, completedAt: a.completed_at
+      completedBy: a.completed_by, completedAt: a.completed_at?.toISOString?.().split('T')[0]
     })));
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -864,12 +1070,12 @@ app.post("/api/activities", requireAuth, async (req, res) => {
   try {
     const id = `a${Date.now()}`;
 
-    // Insert the activity
+    // Insert the activity with audit trail
     await pool.query(
       `INSERT INTO activities
-       (id, document_id, description, sub_description, due_date, priority, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'Pending')`,
-      [id, docId, description, subDescription, dueDate, priority || 'Medium']
+       (id, document_id, description, sub_description, due_date, priority, status, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'Pending', ?, NOW())`,
+      [id, docId, description, subDescription, dueDate, priority || 'Medium', req.user.id || req.user.name]
     );
 
     // Get document info for notifications
@@ -883,7 +1089,7 @@ app.post("/api/activities", requireAuth, async (req, res) => {
       await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, docId, 'activity_added');
     }
 
-    res.status(201).json({ id, docId, description, subDescription, dueDate, priority: priority || 'Medium', status: 'Pending' });
+    res.status(201).json({ id, docId, description, subDescription, dueDate, priority: priority || 'Medium', status: 'Pending', createdBy: req.user.name, createdAt: new Date().toISOString().split('T')[0] });
   } catch (error) {
     console.error("POST /api/activities error:", error);
     res.status(500).json({ error: error.message });
@@ -930,6 +1136,58 @@ app.put("/api/activities/:id/complete", requireAuth, async (req, res) => {
 });
 
 // 💬 GET contestaciones de un documento
+// ⚡ BATCH endpoint para evitar N+1 queries - cargar contestations de múltiples docs en UNA llamada
+app.get("/api/documents/contestations/batch", requireAuth, async (req, res) => {
+  try {
+    const docIds = (String(req.query.ids || '')).split(',').filter(id => id.trim());
+    if (docIds.length === 0) return res.json({});
+
+    // 1. Fetch all contestations for these documents in ONE query
+    const placeholders = docIds.map(() => '?').join(',');
+    const [contestations] = await pool.query(`
+      SELECT c.id, c.document_id, c.presentation_date, c.authority_received, c.notes,
+             c.contact_method, c.registered_by, u.name as registered_by_name, c.registration_date
+      FROM contestations c
+      LEFT JOIN users u ON c.registered_by = u.id
+      WHERE c.document_id IN (${placeholders})
+      ORDER BY c.document_id, c.registration_date DESC
+    `, docIds);
+
+    // 2. Get all contestation files in ONE query
+    const contestationIds = contestations.map((c) => c.id);
+    let files = [];
+    if (contestationIds.length > 0) {
+      const filePlaceholders = contestationIds.map(() => '?').join(',');
+      const [filesResult] = await pool.query(`
+        SELECT contestation_id, file_name, file_url FROM contestation_files WHERE contestation_id IN (${filePlaceholders})
+      `, contestationIds);
+      files = filesResult;
+    }
+
+    // 3. Group by document_id in JavaScript
+    const result = {};
+    for (const contest of contestations) {
+      if (!result[contest.document_id]) result[contest.document_id] = [];
+      const contestFiles = files.filter((f) => f.contestation_id === contest.id);
+      result[contest.document_id].push({
+        id: contest.id,
+        date: contest.presentation_date?.toISOString?.()?.split('T')[0],
+        authority: contest.authority_received,
+        notes: contest.notes,
+        contact_method: contest.contact_method,
+        registered_by: contest.registered_by_name || contest.registered_by,
+        registration_date: contest.registration_date?.toISOString?.()?.split('T')[0],
+        files: contestFiles.map((f) => ({ name: f.file_name, url: f.file_url }))
+      });
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error("GET /api/documents/contestations/batch error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(`
@@ -950,12 +1208,12 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
         );
         return {
           id: c.id,
-          date: c.presentation_date?.toISOString().split('T')[0],
+          date: c.presentation_date?.toISOString?.().split('T')[0],
           authority: c.authority_received,
           notes: c.notes,
           contact_method: c.contact_method,
           registered_by: c.registered_by_name || c.registered_by,
-          registration_date: c.registration_date?.toISOString().split('T')[0],
+          registration_date: c.registration_date?.toISOString?.().split('T')[0],
           files: (files || []).map(f => ({ name: f.file_name, url: f.file_url }))
         };
       })
@@ -1779,6 +2037,32 @@ cron.schedule('0 6 * * *', async () => {
 
 // 🔟 Arrancar servidor
 const PORT = 3001;
-app.listen(PORT, () => {
+
+async function ensureIndexes() {
+  try {
+    // Indexes for dashboard queries (status, due_date filtering)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_status ON documents (status)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_due_date ON documents (due_date)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_status_due ON documents (status, due_date)`);
+
+    // Indexes for JOIN conditions and filters
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_created_by ON documents (created_by)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_last_edited_by ON documents (last_edited_by)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_company_id ON documents (company_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_authority ON documents (authority(50))`);
+
+    // Indexes for contestations queries (avoid N+1)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_contestations_document_id ON contestations (document_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_contestation_files_contestation_id ON contestation_files (contestation_id)`);
+
+    console.log('✅ Índices de base de datos verificados');
+  } catch (err) {
+    // Non-fatal: some MariaDB versions don't support IF NOT EXISTS for indexes
+    console.warn('⚠️ No se pudieron crear índices (no crítico):', err.message);
+  }
+}
+
+app.listen(PORT, async () => {
   console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
+  await ensureIndexes();
 });
