@@ -2246,6 +2246,32 @@ async function ensureIndexes() {
   }
 }
 
+// 🔄 Migración: Crear tabla activity_files si no existe
+async function createActivityFilesTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS activity_files (
+        id VARCHAR(100) PRIMARY KEY,
+        activity_id VARCHAR(50) NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+        file_name VARCHAR(255) NOT NULL,
+        file_url TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Crear índice si no existe
+    try {
+      await pool.query("CREATE INDEX IF NOT EXISTS idx_activity_files ON activity_files(activity_id)");
+    } catch (err) {
+      // Índice ya existe, ignorar
+    }
+
+    console.log('✅ Tabla activity_files verificada/creada');
+  } catch (err) {
+    console.warn('⚠️ Error al crear tabla activity_files:', err.message);
+  }
+}
+
 // 🔄 Migración: Poblar actividades antiguas con created_by/created_at
 async function migrateActivitiesAuditTrail() {
   try {
@@ -2285,5 +2311,6 @@ async function migrateActivitiesAuditTrail() {
 app.listen(PORT, async () => {
   console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
   await ensureIndexes();
+  await createActivityFilesTable();
   await migrateActivitiesAuditTrail();
 });
