@@ -2427,6 +2427,38 @@ async function createHolidaysTable() {
   }
 }
 
+// 🗓️ Migración: Actualizar feriados de 2026 con fechas correctas (aplicando ley de traslados)
+async function migrateHolidays2026() {
+  try {
+    // Eliminar feriados de 2026 incorrectos y reinsertar con fechas correctas
+    await pool.query("DELETE FROM holidays WHERE YEAR(holiday_date) = 2026");
+
+    const holidays2026 = [
+      ['2026-02-02', 'Año Nuevo (trasladado de jueves 1 enero)', 'Ordinary'],
+      ['2026-02-17', 'Lunes de Carnaval', 'Ordinary'],
+      ['2026-02-18', 'Martes de Carnaval', 'Ordinary'],
+      ['2026-04-03', 'Viernes Santo', 'Ordinary'],
+      ['2026-05-01', 'Día del Trabajo', 'Ordinary'],
+      ['2026-05-25', 'Batalla de Pichincha (trasladado de domingo 24)', 'Ordinary'],
+      ['2026-08-10', 'Primer Grito de Independencia', 'Ordinary'],
+      ['2026-10-09', 'Independencia de Guayaquil', 'Ordinary'],
+      ['2026-11-02', 'Día de los Difuntos / Independencia de Cuenca (trasladado)', 'Ordinary'],
+      ['2026-12-25', 'Navidad', 'Ordinary']
+    ];
+
+    for (const [date, name, type] of holidays2026) {
+      await pool.query(
+        'INSERT IGNORE INTO holidays (holiday_date, name, holiday_type) VALUES (?, ?, ?)',
+        [date, name, type]
+      );
+    }
+
+    console.log('✅ Feriados 2026 actualizados con fechas correctas (aplicando ley de traslados Ecuador)');
+  } catch (err) {
+    console.warn('⚠️ Error al actualizar feriados 2026:', err.message);
+  }
+}
+
 // 🔄 Migración: Poblar actividades antiguas con created_by/created_at
 async function migrateActivitiesAuditTrail() {
   try {
@@ -2468,5 +2500,6 @@ app.listen(PORT, async () => {
   await ensureIndexes();
   await createActivityFilesTable();
   await createHolidaysTable();
+  await migrateHolidays2026();
   await migrateActivitiesAuditTrail();
 });
