@@ -2428,38 +2428,60 @@ async function createHolidaysTable() {
 }
 
 // 🗓️ Migración: Actualizar feriados de 2026 con fechas correctas (aplicando ley de traslados)
+// Feriados oficiales Ecuador 2026 (verificados con algoritmo Pascua 2026 = 5 abril)
+const ECUADOR_HOLIDAYS_2026 = [
+  ['2026-01-02', 'Año Nuevo', 'Ordinary'],
+  ['2026-02-16', 'Lunes de Carnaval', 'Ordinary'],
+  ['2026-02-17', 'Martes de Carnaval', 'Ordinary'],
+  ['2026-04-03', 'Viernes Santo', 'Ordinary'],
+  ['2026-05-01', 'Día del Trabajo', 'Ordinary'],
+  ['2026-05-25', 'Batalla de Pichincha', 'Ordinary'],
+  ['2026-08-10', 'Primer Grito de Independencia', 'Ordinary'],
+  ['2026-10-09', 'Independencia de Guayaquil', 'Ordinary'],
+  ['2026-11-02', 'Día de los Difuntos / Independencia de Cuenca', 'Ordinary'],
+  ['2026-12-25', 'Navidad', 'Ordinary']
+];
+
 async function migrateHolidays2026() {
   try {
-    // Eliminar feriados de 2026 incorrectos y reinsertar con fechas correctas
+    // Usar REPLACE INTO para garantizar que los datos correctos siempre queden en la BD
     await pool.query("DELETE FROM holidays WHERE YEAR(holiday_date) = 2026");
-
-    // Fechas calculadas con algoritmo Meeus/Jones/Butcher (Pascua 2026 = 5 abril)
-    // y reglas de traslado según Ley Orgánica Reformatoria Ecuador
-    const holidays2026 = [
-      ['2026-01-02', 'Año Nuevo', 'Ordinary'],                                      // 1 ene Jueves → Viernes 2 ene
-      ['2026-02-16', 'Lunes de Carnaval', 'Ordinary'],                              // Lunes (se mantiene)
-      ['2026-02-17', 'Martes de Carnaval', 'Ordinary'],                             // Martes (Carnaval es siempre Lun-Mar)
-      ['2026-04-03', 'Viernes Santo', 'Ordinary'],                                  // Viernes (se mantiene)
-      ['2026-05-01', 'Día del Trabajo', 'Ordinary'],                                // Viernes (se mantiene)
-      ['2026-05-25', 'Batalla de Pichincha', 'Ordinary'],                           // 24 may Domingo → Lunes 25 may
-      ['2026-08-10', 'Primer Grito de Independencia', 'Ordinary'],                  // Lunes (se mantiene)
-      ['2026-10-09', 'Independencia de Guayaquil', 'Ordinary'],                     // Viernes (se mantiene)
-      ['2026-11-02', 'Día de los Difuntos / Independencia de Cuenca', 'Ordinary'],  // Lunes + Martes→Lunes (coinciden)
-      ['2026-12-25', 'Navidad', 'Ordinary']                                         // Viernes (se mantiene)
-    ];
-
-    for (const [date, name, type] of holidays2026) {
+    for (const [date, name, type] of ECUADOR_HOLIDAYS_2026) {
       await pool.query(
-        'INSERT IGNORE INTO holidays (holiday_date, name, holiday_type) VALUES (?, ?, ?)',
+        'INSERT INTO holidays (holiday_date, name, holiday_type) VALUES (?, ?, ?)',
         [date, name, type]
       );
     }
-
-    console.log('✅ Feriados 2026 actualizados con fechas correctas (aplicando ley de traslados Ecuador)');
+    console.log(`✅ Feriados 2026 cargados: ${ECUADOR_HOLIDAYS_2026.length} registros`);
   } catch (err) {
-    console.warn('⚠️ Error al actualizar feriados 2026:', err.message);
+    console.error('❌ Error al cargar feriados 2026:', err.message);
   }
 }
+
+// 🗓️ POST seed feriados 2026 manualmente (solo Admin)
+app.post("/api/holidays/seed/:year", requireAuth, async (req, res) => {
+  if (req.user.role !== 'Admin') {
+    return res.status(403).json({ error: "Solo Admins pueden cargar feriados" });
+  }
+
+  const year = parseInt(req.params.year);
+  if (year === 2026) {
+    try {
+      await pool.query("DELETE FROM holidays WHERE YEAR(holiday_date) = 2026");
+      for (const [date, name, type] of ECUADOR_HOLIDAYS_2026) {
+        await pool.query(
+          'INSERT INTO holidays (holiday_date, name, holiday_type) VALUES (?, ?, ?)',
+          [date, name, type]
+        );
+      }
+      res.json({ ok: true, inserted: ECUADOR_HOLIDAYS_2026.length, year: 2026 });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  } else {
+    res.status(400).json({ error: `No hay datos predefinidos para el año ${year}` });
+  }
+});
 
 // 🔄 Migración: Poblar actividades antiguas con created_by/created_at
 async function migrateActivitiesAuditTrail() {
