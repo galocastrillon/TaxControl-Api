@@ -396,17 +396,7 @@ const requireAuth = async (req, res, next) => {
     sessionCache.set(token, { user: rows[0], cachedAt: Date.now() });
     next();
   } catch (error) {
-    // Fallback for development when DB is unavailable
-    console.log('ℹ️ Auth DB unavailable, using development fallback');
-    req.user = {
-      user_id: 'dev-user',
-      id: 'dev-user',
-      name: 'Development User',
-      email: 'dev@example.com',
-      role: 'Admin',
-      avatar_url: null
-    };
-    next();
+    res.status(500).json({ error: "Error verificando sesión" });
   }
 };
 
