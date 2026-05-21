@@ -1538,7 +1538,9 @@ app.get("/api/holidays", requireAuth, async (req, res) => {
       name: h.name,
       type: h.holiday_type,
       createdBy: h.created_by,
-      createdAt: h.created_at?.toISOString?.().split('T')[0]
+      createdAt: h.created_at?.toISOString?.().split('T')[0],
+      updatedBy: h.updated_by,
+      updatedAt: h.updated_at?.toISOString?.().split('T')[0]
     })));
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1592,8 +1594,8 @@ app.put("/api/holidays/:id", requireAuth, async (req, res) => {
 
   try {
     await pool.query(
-      `UPDATE holidays SET holiday_date=?, name=?, holiday_type=? WHERE id=?`,
-      [date, name, type, req.params.id]
+      `UPDATE holidays SET holiday_date=?, name=?, holiday_type=?, updated_by=? WHERE id=?`,
+      [date, name, type, req.user.user_id, req.params.id]
     );
     res.json({ ok: true });
   } catch (error) {
@@ -2414,12 +2416,23 @@ async function createHolidaysTable() {
         name VARCHAR(255) NOT NULL,
         holiday_type ENUM('Ordinary', 'Extraordinary') DEFAULT 'Ordinary',
         created_by VARCHAR(50) REFERENCES users(id),
+        updated_by VARCHAR(50) REFERENCES users(id),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX idx_holiday_date (holiday_date),
         INDEX idx_holiday_year (YEAR(holiday_date))
       )
     `);
+
+    // Migración: agregar updated_by si no existe
+    try {
+      await pool.query(`ALTER TABLE holidays ADD COLUMN updated_by VARCHAR(50) REFERENCES users(id) AFTER created_by`);
+      console.log('✅ Columna updated_by agregada a holidays');
+    } catch (alterErr) {
+      if (!alterErr.message.includes('Duplicate column')) {
+        console.warn('⚠️ Error al agregar updated_by:', alterErr.message);
+      }
+    }
 
     console.log('✅ Tabla holidays verificada/creada');
   } catch (err) {
