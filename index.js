@@ -2440,36 +2440,7 @@ async function createHolidaysTable() {
   }
 }
 
-// 🗓️ Feriados oficiales Ecuador 2024-2026 (verificados con reglas de traslado ecuatorianas)
-const ECUADOR_HOLIDAYS_2024 = [
-  ['2024-01-01', 'Año Nuevo', 'Ordinary'],
-  ['2024-02-13', 'Martes de Carnaval', 'Ordinary'],
-  ['2024-02-14', 'Miércoles de Ceniza', 'Ordinary'],
-  ['2024-03-29', 'Viernes Santo', 'Ordinary'],
-  ['2024-05-01', 'Día del Trabajo', 'Ordinary'],
-  ['2024-08-10', 'Primer Grito de Independencia', 'Ordinary'],
-  ['2024-08-16', 'Día de la Educación', 'Ordinary'],
-  ['2024-10-12', 'Descubrimiento de América', 'Ordinary'],
-  ['2024-11-03', 'Día de Difuntos', 'Ordinary'],
-  ['2024-11-04', 'Día de Independencia de Cuenca', 'Ordinary'],
-  ['2024-12-25', 'Navidad', 'Ordinary']
-];
-
-const ECUADOR_HOLIDAYS_2025 = [
-  ['2025-01-01', 'Año Nuevo', 'Ordinary'],
-  ['2025-03-04', 'Martes de Carnaval', 'Ordinary'],
-  ['2025-03-05', 'Miércoles de Ceniza', 'Ordinary'],
-  ['2025-04-18', 'Viernes Santo', 'Ordinary'],
-  ['2025-05-01', 'Día del Trabajo', 'Ordinary'],
-  ['2025-08-10', 'Primer Grito de Independencia', 'Ordinary'],
-  ['2025-08-16', 'Día de la Educación', 'Ordinary'],
-  ['2025-10-12', 'Descubrimiento de América', 'Ordinary'],
-  ['2025-11-03', 'Día de Difuntos', 'Ordinary'],
-  ['2025-11-04', 'Día de Independencia de Cuenca', 'Ordinary'],
-  ['2025-12-25', 'Navidad', 'Ordinary']
-];
-
-// Feriados 2026 verificados con algoritmo Pascua (5 abril 2026) + reglas traslado ecuatorianas
+// 🗓️ Feriados oficiales Ecuador 2026 (verificados con algoritmo Pascua 5 abril 2026 + traslados)
 const ECUADOR_HOLIDAYS_2026 = [
   ['2026-01-02', 'Año Nuevo', 'Ordinary'],
   ['2026-02-16', 'Lunes de Carnaval', 'Ordinary'],
@@ -2483,17 +2454,11 @@ const ECUADOR_HOLIDAYS_2026 = [
   ['2026-12-25', 'Navidad', 'Ordinary']
 ];
 
-const ALL_ECUADOR_HOLIDAYS = [
-  ...ECUADOR_HOLIDAYS_2024,
-  ...ECUADOR_HOLIDAYS_2025,
-  ...ECUADOR_HOLIDAYS_2026
-];
-
-// Carga los feriados usando INSERT IGNORE (preserva ediciones del admin, no sobreescribe)
+// Carga los feriados 2026 usando INSERT IGNORE (preserva ediciones del admin, no sobreescribe)
 async function migrateHolidays2026() {
   try {
     let loaded = 0;
-    for (const [date, name, type] of ALL_ECUADOR_HOLIDAYS) {
+    for (const [date, name, type] of ECUADOR_HOLIDAYS_2026) {
       const [result] = await pool.query(
         'INSERT IGNORE INTO holidays (holiday_date, name, holiday_type) VALUES (?, ?, ?)',
         [date, name, type]
@@ -2501,46 +2466,14 @@ async function migrateHolidays2026() {
       if (result.affectedRows > 0) loaded++;
     }
     if (loaded > 0) {
-      console.log(`✅ Feriados Ecuador cargados: ${loaded} nuevos registros (2024-2026)`);
+      console.log(`✅ Feriados 2026 cargados: ${loaded} nuevos registros`);
     } else {
-      console.log('✅ Feriados Ecuador ya existen en BD, no se modificaron');
+      console.log('✅ Feriados 2026 ya existen en BD');
     }
   } catch (err) {
-    console.error('❌ Error al cargar feriados Ecuador:', err.message);
+    console.error('❌ Error al cargar feriados 2026:', err.message);
   }
 }
-
-// 🗓️ POST seed feriados por año manualmente (solo Admin) - reemplaza todos los datos de ese año
-app.post("/api/holidays/seed/:year", requireAuth, async (req, res) => {
-  if (req.user.role !== 'Admin') {
-    return res.status(403).json({ error: "Solo Admins pueden cargar feriados" });
-  }
-
-  const year = parseInt(req.params.year);
-  const holidaysByYear = {
-    2024: ECUADOR_HOLIDAYS_2024,
-    2025: ECUADOR_HOLIDAYS_2025,
-    2026: ECUADOR_HOLIDAYS_2026
-  };
-
-  const holidays = holidaysByYear[year];
-  if (!holidays) {
-    return res.status(400).json({ error: `No hay datos predefinidos para el año ${year}` });
-  }
-
-  try {
-    await pool.query("DELETE FROM holidays WHERE YEAR(holiday_date) = ?", [year]);
-    for (const [date, name, type] of holidays) {
-      await pool.query(
-        'INSERT INTO holidays (holiday_date, name, holiday_type) VALUES (?, ?, ?)',
-        [date, name, type]
-      );
-    }
-    res.json({ ok: true, inserted: holidays.length, year });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // 🔄 Migración: Poblar actividades antiguas con created_by/created_at
 async function migrateActivitiesAuditTrail() {
