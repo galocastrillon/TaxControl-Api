@@ -1238,7 +1238,7 @@ app.post("/api/activities", requireAuth, async (req, res) => {
 
 // 📋 PUT actualizar actividad
 app.put("/api/activities/:id", requireAuth, async (req, res) => {
-  const { description, subDescription, dueDate, priority, status } = req.body;
+  const { description, subDescription, dueDate, priority, status, files } = req.body;
   try {
     await pool.query(
       `UPDATE activities
@@ -1246,6 +1246,36 @@ app.put("/api/activities/:id", requireAuth, async (req, res) => {
        WHERE id=?`,
       [description, subDescription, dueDate, priority, status, req.params.id]
     );
+
+    // Si se incluye el array de archivos, sincronizar activity_files
+    if (Array.isArray(files)) {
+      // Obtener archivos actuales en BD
+      const [currentFiles] = await pool.query(
+        'SELECT id FROM activity_files WHERE activity_id = ?',
+        [req.params.id]
+      );
+      const currentIds = new Set(currentFiles.map(f => f.id));
+      const incomingIds = new Set(files.filter(f => f.id).map(f => f.id));
+
+      // Eliminar archivos que ya no están en la lista
+      for (const cf of currentFiles) {
+        if (!incomingIds.has(cf.id)) {
+          await pool.query('DELETE FROM activity_files WHERE id = ?', [cf.id]);
+        }
+      }
+
+      // Insertar archivos nuevos (los que no tienen ID en BD o tienen ID temporal)
+      for (const file of files) {
+        if (file.name && file.url && !currentIds.has(file.id)) {
+          const fileId = `af${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          await pool.query(
+            'INSERT INTO activity_files (id, activity_id, file_name, file_url) VALUES (?, ?, ?, ?)',
+            [fileId, req.params.id, file.name, file.url]
+          );
+        }
+      }
+    }
+
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
