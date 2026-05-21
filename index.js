@@ -2433,17 +2433,19 @@ async function migrateHolidays2026() {
     // Eliminar feriados de 2026 incorrectos y reinsertar con fechas correctas
     await pool.query("DELETE FROM holidays WHERE YEAR(holiday_date) = 2026");
 
+    // Fechas calculadas con algoritmo Meeus/Jones/Butcher (Pascua 2026 = 5 abril)
+    // y reglas de traslado según Ley Orgánica Reformatoria Ecuador
     const holidays2026 = [
-      ['2026-02-02', 'Año Nuevo (trasladado de jueves 1 enero)', 'Ordinary'],
-      ['2026-02-17', 'Lunes de Carnaval', 'Ordinary'],
-      ['2026-02-18', 'Martes de Carnaval', 'Ordinary'],
-      ['2026-04-03', 'Viernes Santo', 'Ordinary'],
-      ['2026-05-01', 'Día del Trabajo', 'Ordinary'],
-      ['2026-05-25', 'Batalla de Pichincha (trasladado de domingo 24)', 'Ordinary'],
-      ['2026-08-10', 'Primer Grito de Independencia', 'Ordinary'],
-      ['2026-10-09', 'Independencia de Guayaquil', 'Ordinary'],
-      ['2026-11-02', 'Día de los Difuntos / Independencia de Cuenca (trasladado)', 'Ordinary'],
-      ['2026-12-25', 'Navidad', 'Ordinary']
+      ['2026-01-02', 'Año Nuevo', 'Ordinary'],                                      // 1 ene Jueves → Viernes 2 ene
+      ['2026-02-16', 'Lunes de Carnaval', 'Ordinary'],                              // Lunes (se mantiene)
+      ['2026-02-17', 'Martes de Carnaval', 'Ordinary'],                             // Martes (Carnaval es siempre Lun-Mar)
+      ['2026-04-03', 'Viernes Santo', 'Ordinary'],                                  // Viernes (se mantiene)
+      ['2026-05-01', 'Día del Trabajo', 'Ordinary'],                                // Viernes (se mantiene)
+      ['2026-05-25', 'Batalla de Pichincha', 'Ordinary'],                           // 24 may Domingo → Lunes 25 may
+      ['2026-08-10', 'Primer Grito de Independencia', 'Ordinary'],                  // Lunes (se mantiene)
+      ['2026-10-09', 'Independencia de Guayaquil', 'Ordinary'],                     // Viernes (se mantiene)
+      ['2026-11-02', 'Día de los Difuntos / Independencia de Cuenca', 'Ordinary'],  // Lunes + Martes→Lunes (coinciden)
+      ['2026-12-25', 'Navidad', 'Ordinary']                                         // Viernes (se mantiene)
     ];
 
     for (const [date, name, type] of holidays2026) {
