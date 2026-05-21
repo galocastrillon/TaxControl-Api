@@ -51,18 +51,36 @@ const getCachedDocs = (key) => {
 const setCachedDocs = (key, data) => docsCache.set(key, { data, cachedAt: Date.now() });
 const invalidateDocsCache = () => docsCache.clear();
 
+// Calcula la fecha de descanso observada según reglas de traslado Ecuador (Ley Orgánica Reformatoria)
+// Domingo(0)→Lunes, Martes(2)→Lunes previo, Miércoles(3)→Viernes, Jueves(4)→Viernes, Lunes/Viernes→se mantiene
+function calculateCalendarDate(officialDateStr) {
+  const [y, m, d] = officialDateStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d, 12, 0, 0);
+  const dow = date.getDay();
+  const result = new Date(date);
+  if (dow === 0)      result.setDate(result.getDate() + 1); // Domingo → Lunes
+  else if (dow === 2) result.setDate(result.getDate() - 1); // Martes → Lunes previo
+  else if (dow === 3) result.setDate(result.getDate() + 2); // Miércoles → Viernes
+  else if (dow === 4) result.setDate(result.getDate() + 1); // Jueves → Viernes
+  const ry = result.getFullYear();
+  const rm = String(result.getMonth() + 1).padStart(2, '0');
+  const rd = String(result.getDate()).padStart(2, '0');
+  return `${ry}-${rm}-${rd}`;
+}
+
 // In-memory holidays for fallback when DB is not available
+// official_date = fecha del decreto, holiday_date = fecha de descanso observada (calendar_date)
 const memoryHolidays = [
-  { id: 1, holiday_date: new Date('2026-01-02'), name: 'Año Nuevo', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 2, holiday_date: new Date('2026-02-16'), name: 'Lunes de Carnaval', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 3, holiday_date: new Date('2026-02-17'), name: 'Martes de Carnaval', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 4, holiday_date: new Date('2026-04-03'), name: 'Viernes Santo', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 5, holiday_date: new Date('2026-05-01'), name: 'Día del Trabajo', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 6, holiday_date: new Date('2026-05-25'), name: 'Batalla de Pichincha', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 7, holiday_date: new Date('2026-08-10'), name: 'Primer Grito de Independencia', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 8, holiday_date: new Date('2026-10-09'), name: 'Independencia de Guayaquil', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 9, holiday_date: new Date('2026-11-02'), name: 'Día de los Difuntos / Independencia de Cuenca', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 10, holiday_date: new Date('2026-12-25'), name: 'Navidad', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() }
+  { id: 1, official_date: new Date('2026-01-01'), holiday_date: new Date('2026-01-02'), name: 'Año Nuevo', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
+  { id: 2, official_date: new Date('2026-02-16'), holiday_date: new Date('2026-02-16'), name: 'Lunes de Carnaval', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
+  { id: 3, official_date: new Date('2026-02-17'), holiday_date: new Date('2026-02-17'), name: 'Martes de Carnaval', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
+  { id: 4, official_date: new Date('2026-04-03'), holiday_date: new Date('2026-04-03'), name: 'Viernes Santo', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
+  { id: 5, official_date: new Date('2026-05-01'), holiday_date: new Date('2026-05-01'), name: 'Día del Trabajo', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
+  { id: 6, official_date: new Date('2026-05-24'), holiday_date: new Date('2026-05-25'), name: 'Batalla de Pichincha', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
+  { id: 7, official_date: new Date('2026-08-10'), holiday_date: new Date('2026-08-10'), name: 'Primer Grito de Independencia', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
+  { id: 8, official_date: new Date('2026-10-09'), holiday_date: new Date('2026-10-09'), name: 'Independencia de Guayaquil', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
+  { id: 9, official_date: new Date('2026-11-02'), holiday_date: new Date('2026-11-02'), name: 'Día de los Difuntos / Independencia de Cuenca', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
+  { id: 10, official_date: new Date('2026-12-25'), holiday_date: new Date('2026-12-25'), name: 'Navidad', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() }
 ];
 
 // Servir archivos estáticos de uploads
@@ -1558,16 +1576,27 @@ app.get("/api/holidays", requireAuth, async (req, res) => {
       }
     }
 
-    res.json(rows.map(h => ({
-      id: h.id,
-      date: h.holiday_date.toISOString().split('T')[0],
-      name: h.name,
-      type: h.holiday_type,
-      createdBy: h.created_by,
-      createdAt: h.created_at?.toISOString?.().split('T')[0],
-      updatedBy: h.updated_by,
-      updatedAt: h.updated_at?.toISOString?.().split('T')[0]
-    })));
+    const toDateStr = (val) => {
+      if (!val) return null;
+      if (val instanceof Date) return val.toISOString().split('T')[0];
+      return String(val).split('T')[0];
+    };
+    res.json(rows.map(h => {
+      const calendarDate = toDateStr(h.holiday_date);
+      const officialDate = toDateStr(h.official_date) || calendarDate;
+      return {
+        id: h.id,
+        officialDate,
+        calendarDate,
+        date: calendarDate, // backward compat
+        name: h.name,
+        type: h.holiday_type,
+        createdBy: h.created_by,
+        createdAt: toDateStr(h.created_at),
+        updatedBy: h.updated_by,
+        updatedAt: toDateStr(h.updated_at)
+      };
+    }));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1575,27 +1604,31 @@ app.get("/api/holidays", requireAuth, async (req, res) => {
 
 // 🗓️ POST crear nuevo feriado
 app.post("/api/holidays", requireAuth, async (req, res) => {
-  const { date, name, type = 'Ordinary' } = req.body;
+  // Acepta formato nuevo (officialDate/calendarDate) y legacy (date)
+  const { officialDate, calendarDate, name, type = 'Ordinary' } = req.body;
+  const official = officialDate || req.body.date;
+  const calendar = calendarDate || (official ? calculateCalendarDate(official) : null);
 
-  if (!date || !name) {
-    return res.status(400).json({ error: "date y name son requeridos" });
+  if (!official || !name) {
+    return res.status(400).json({ error: "officialDate y name son requeridos" });
   }
 
-  // Solo Admin puede crear feriados
   if (req.user.role !== 'Admin') {
     return res.status(403).json({ error: "Solo Admins pueden crear feriados" });
   }
 
   try {
     const [result] = await pool.query(
-      `INSERT INTO holidays (holiday_date, name, holiday_type, created_by)
-       VALUES (?, ?, ?, ?)`,
-      [date, name, type, req.user.user_id]
+      `INSERT INTO holidays (official_date, holiday_date, name, holiday_type, created_by)
+       VALUES (?, ?, ?, ?, ?)`,
+      [official, calendar, name, type, req.user.user_id]
     );
 
     res.status(201).json({
       id: result.insertId,
-      date,
+      officialDate: official,
+      calendarDate: calendar,
+      date: calendar,
       name,
       type,
       createdBy: req.user.user_id,
@@ -1603,7 +1636,7 @@ app.post("/api/holidays", requireAuth, async (req, res) => {
     });
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ error: "Este feriado ya existe" });
+      return res.status(409).json({ error: "Ya existe un feriado en esa fecha calendario" });
     }
     res.status(500).json({ error: error.message });
   }
@@ -1611,22 +1644,23 @@ app.post("/api/holidays", requireAuth, async (req, res) => {
 
 // 🗓️ PUT actualizar feriado
 app.put("/api/holidays/:id", requireAuth, async (req, res) => {
-  const { date, name, type } = req.body;
+  const { officialDate, calendarDate, name, type } = req.body;
+  const official = officialDate || req.body.date;
+  const calendar = calendarDate || (official ? calculateCalendarDate(official) : req.body.date);
 
-  // Solo Admin puede editar feriados
   if (req.user.role !== 'Admin') {
     return res.status(403).json({ error: "Solo Admins pueden editar feriados" });
   }
 
   try {
     await pool.query(
-      `UPDATE holidays SET holiday_date=?, name=?, holiday_type=?, updated_by=? WHERE id=?`,
-      [date, name, type, req.user.user_id, req.params.id]
+      `UPDATE holidays SET official_date=?, holiday_date=?, name=?, holiday_type=?, updated_by=? WHERE id=?`,
+      [official, calendar, name, type, req.user.user_id, req.params.id]
     );
     res.json({ ok: true });
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ error: "Este feriado ya existe" });
+      return res.status(409).json({ error: "Ya existe un feriado en esa fecha calendario" });
     }
     res.status(500).json({ error: error.message });
   }
@@ -2438,6 +2472,7 @@ async function createHolidaysTable() {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS holidays (
         id INT PRIMARY KEY AUTO_INCREMENT,
+        official_date DATE,
         holiday_date DATE NOT NULL UNIQUE,
         name VARCHAR(255) NOT NULL,
         holiday_type ENUM('Ordinary', 'Extraordinary') DEFAULT 'Ordinary',
@@ -2450,7 +2485,7 @@ async function createHolidaysTable() {
       )
     `);
 
-    // Migración: agregar updated_by si no existe
+    // Migración: agregar updated_by si no existe (tablas pre-existentes)
     try {
       await pool.query(`ALTER TABLE holidays ADD COLUMN updated_by VARCHAR(50) REFERENCES users(id) AFTER created_by`);
       console.log('✅ Columna updated_by agregada a holidays');
@@ -2460,44 +2495,66 @@ async function createHolidaysTable() {
       }
     }
 
+    // Migración: agregar official_date si no existe (tablas pre-existentes)
+    try {
+      await pool.query(`ALTER TABLE holidays ADD COLUMN official_date DATE AFTER id`);
+      // Rellenar official_date con holiday_date para filas existentes sin él
+      await pool.query(`UPDATE holidays SET official_date = holiday_date WHERE official_date IS NULL`);
+      console.log('✅ Columna official_date agregada a holidays');
+    } catch (alterErr) {
+      if (!alterErr.message.includes('Duplicate column')) {
+        console.warn('⚠️ Error al agregar official_date:', alterErr.message);
+      }
+    }
+
     console.log('✅ Tabla holidays verificada/creada');
   } catch (err) {
     console.warn('⚠️ Error al crear tabla holidays:', err.message);
   }
 }
 
-// 🗓️ Feriados oficiales Ecuador 2026 (verificados con algoritmo Pascua 5 abril 2026 + traslados)
+// 🗓️ Feriados oficiales Ecuador 2026
+// Formato: [official_date, calendar_date, name, type]
+// official_date = fecha del decreto, calendar_date = fecha de descanso observada (traslado aplicado)
 const ECUADOR_HOLIDAYS_2026 = [
-  ['2026-01-02', 'Año Nuevo', 'Ordinary'],
-  ['2026-02-16', 'Lunes de Carnaval', 'Ordinary'],
-  ['2026-02-17', 'Martes de Carnaval', 'Ordinary'],
-  ['2026-04-03', 'Viernes Santo', 'Ordinary'],
-  ['2026-05-01', 'Día del Trabajo', 'Ordinary'],
-  ['2026-05-25', 'Batalla de Pichincha', 'Ordinary'],
-  ['2026-08-10', 'Primer Grito de Independencia', 'Ordinary'],
-  ['2026-10-09', 'Independencia de Guayaquil', 'Ordinary'],
-  ['2026-11-02', 'Día de los Difuntos / Independencia de Cuenca', 'Ordinary'],
-  ['2026-12-25', 'Navidad', 'Ordinary']
+  ['2026-01-01', '2026-01-02', 'Año Nuevo', 'Ordinary'],                              // Jueves → Viernes
+  ['2026-02-16', '2026-02-16', 'Lunes de Carnaval', 'Ordinary'],                     // Lunes → se mantiene
+  ['2026-02-17', '2026-02-17', 'Martes de Carnaval', 'Ordinary'],                    // Carnaval: se mantiene
+  ['2026-04-03', '2026-04-03', 'Viernes Santo', 'Ordinary'],                         // Viernes → se mantiene
+  ['2026-05-01', '2026-05-01', 'Día del Trabajo', 'Ordinary'],                       // Viernes → se mantiene
+  ['2026-05-24', '2026-05-25', 'Batalla de Pichincha', 'Ordinary'],                  // Domingo → Lunes
+  ['2026-08-10', '2026-08-10', 'Primer Grito de Independencia', 'Ordinary'],         // Lunes → se mantiene
+  ['2026-10-09', '2026-10-09', 'Independencia de Guayaquil', 'Ordinary'],            // Viernes → se mantiene
+  ['2026-11-02', '2026-11-02', 'Día de los Difuntos / Independencia de Cuenca', 'Ordinary'], // Lunes → se mantiene
+  ['2026-12-25', '2026-12-25', 'Navidad', 'Ordinary']                                // Viernes → se mantiene
 ];
 
 // Carga los feriados 2026 usando INSERT IGNORE (preserva ediciones del admin, no sobreescribe)
+// Para filas ya existentes, actualiza official_date si aún no está configurado
 async function migrateHolidays2026() {
   try {
-    let loaded = 0;
-    for (const [date, name, type] of ECUADOR_HOLIDAYS_2026) {
+    let inserted = 0, updated = 0;
+    for (const [officialDate, calendarDate, name, type] of ECUADOR_HOLIDAYS_2026) {
       const [result] = await pool.query(
-        'INSERT IGNORE INTO holidays (holiday_date, name, holiday_type) VALUES (?, ?, ?)',
-        [date, name, type]
+        'INSERT IGNORE INTO holidays (official_date, holiday_date, name, holiday_type) VALUES (?, ?, ?, ?)',
+        [officialDate, calendarDate, name, type]
       );
-      if (result.affectedRows > 0) loaded++;
+      if (result.affectedRows > 0) {
+        inserted++;
+      } else {
+        // Fila ya existe: actualizar official_date si no está definido
+        const [upResult] = await pool.query(
+          'UPDATE holidays SET official_date = ? WHERE holiday_date = ? AND official_date IS NULL',
+          [officialDate, calendarDate]
+        );
+        if (upResult.affectedRows > 0) updated++;
+      }
     }
-    if (loaded > 0) {
-      console.log(`✅ Feriados 2026 cargados: ${loaded} nuevos registros`);
-    } else {
-      console.log('✅ Feriados 2026 ya existen en BD');
-    }
+    if (inserted > 0) console.log(`✅ Feriados 2026 insertados: ${inserted}`);
+    if (updated > 0) console.log(`✅ Fechas oficiales 2026 actualizadas: ${updated}`);
+    if (inserted === 0 && updated === 0) console.log('✅ Feriados 2026 ya están al día en BD');
   } catch (err) {
-    console.error('❌ Error al cargar feriados 2026:', err.message);
+    console.error('❌ Error al migrar feriados 2026:', err.message);
   }
 }
 
