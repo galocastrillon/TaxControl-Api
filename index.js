@@ -1517,6 +1517,108 @@ app.delete("/api/contestations/:id", requireAuth, async (req, res) => {
   }
 });
 
+// 🗓️ HOLIDAYS ENDPOINTS (Feriados para cálculo de fechas de vencimiento)
+
+// 🗓️ GET listar todos los feriados
+app.get("/api/holidays", requireAuth, async (req, res) => {
+  try {
+    const { year } = req.query;
+    let query = 'SELECT * FROM holidays ORDER BY holiday_date ASC';
+    const params = [];
+
+    if (year) {
+      query = 'SELECT * FROM holidays WHERE YEAR(holiday_date) = ? ORDER BY holiday_date ASC';
+      params.push(parseInt(year));
+    }
+
+    const [rows] = await pool.query(query, params);
+    res.json(rows.map(h => ({
+      id: h.id,
+      date: h.holiday_date.toISOString().split('T')[0],
+      name: h.name,
+      type: h.holiday_type,
+      createdBy: h.created_by,
+      createdAt: h.created_at?.toISOString?.().split('T')[0]
+    })));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🗓️ POST crear nuevo feriado
+app.post("/api/holidays", requireAuth, async (req, res) => {
+  const { date, name, type = 'Ordinary' } = req.body;
+
+  if (!date || !name) {
+    return res.status(400).json({ error: "date y name son requeridos" });
+  }
+
+  // Solo Admin puede crear feriados
+  if (req.user.role !== 'Admin') {
+    return res.status(403).json({ error: "Solo Admins pueden crear feriados" });
+  }
+
+  try {
+    const [result] = await pool.query(
+      `INSERT INTO holidays (holiday_date, name, holiday_type, created_by)
+       VALUES (?, ?, ?, ?)`,
+      [date, name, type, req.user.user_id]
+    );
+
+    res.status(201).json({
+      id: result.insertId,
+      date,
+      name,
+      type,
+      createdBy: req.user.user_id,
+      createdAt: new Date().toISOString().split('T')[0]
+    });
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: "Este feriado ya existe" });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🗓️ PUT actualizar feriado
+app.put("/api/holidays/:id", requireAuth, async (req, res) => {
+  const { date, name, type } = req.body;
+
+  // Solo Admin puede editar feriados
+  if (req.user.role !== 'Admin') {
+    return res.status(403).json({ error: "Solo Admins pueden editar feriados" });
+  }
+
+  try {
+    await pool.query(
+      `UPDATE holidays SET holiday_date=?, name=?, holiday_type=? WHERE id=?`,
+      [date, name, type, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: "Este feriado ya existe" });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🗓️ DELETE eliminar feriado
+app.delete("/api/holidays/:id", requireAuth, async (req, res) => {
+  // Solo Admin puede eliminar feriados
+  if (req.user.role !== 'Admin') {
+    return res.status(403).json({ error: "Solo Admins pueden eliminar feriados" });
+  }
+
+  try {
+    await pool.query("DELETE FROM holidays WHERE id = ?", [req.params.id]);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 🤖 Endpoint de análisis con IA (Gemini)
 app.post("/api/analyze", requireAuth, async (req, res) => {
   const { fileData, mimeType } = req.body;
@@ -2302,6 +2404,29 @@ async function createActivityFilesTable() {
   }
 }
 
+// 🗓️ Migración: Crear tabla holidays si no existe
+async function createHolidaysTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS holidays (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        holiday_date DATE NOT NULL UNIQUE,
+        name VARCHAR(255) NOT NULL,
+        holiday_type ENUM('Ordinary', 'Extraordinary') DEFAULT 'Ordinary',
+        created_by VARCHAR(50) REFERENCES users(id),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_holiday_date (holiday_date),
+        INDEX idx_holiday_year (YEAR(holiday_date))
+      )
+    `);
+
+    console.log('✅ Tabla holidays verificada/creada');
+  } catch (err) {
+    console.warn('⚠️ Error al crear tabla holidays:', err.message);
+  }
+}
+
 // 🔄 Migración: Poblar actividades antiguas con created_by/created_at
 async function migrateActivitiesAuditTrail() {
   try {
@@ -2342,5 +2467,6 @@ app.listen(PORT, async () => {
   console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
   await ensureIndexes();
   await createActivityFilesTable();
+  await createHolidaysTable();
   await migrateActivitiesAuditTrail();
 });
