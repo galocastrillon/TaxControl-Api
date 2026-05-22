@@ -1455,10 +1455,10 @@ app.get("/api/documents/contestations/batch", requireAuth, async (req, res) => {
       ORDER BY c.document_id, c.presentation_date ASC, c.id ASC
     `, docIds);
 
-    // 2. Get all contestation files in ONE query
+    // 2. Get all contestation files in ONE query (solo si la tabla existe)
     const contestationIds = contestations.map((c) => c.id);
     let files = [];
-    if (contestationIds.length > 0) {
+    if (contestationIds.length > 0 && contestationFilesTableReady) {
       const filePlaceholders = contestationIds.map(() => '?').join(',');
       const [filesResult] = await pool.query(`
         SELECT contestation_id, file_name, file_url FROM contestation_files WHERE contestation_id IN (${filePlaceholders})
@@ -1503,17 +1503,17 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
       LIMIT 100
     `, [req.params.id]);
 
-    // 🚀 Cargar archivos en PARALELO en lugar de secuencial
+    // Cargar archivos en paralelo
     const contestations = await Promise.all(
       rows.map(async (c) => {
         let files = [];
-        try {
+        if (contestationFilesTableReady) {
           const [fileRows] = await pool.query(
-            'SELECT * FROM contestation_files WHERE contestation_id = ? LIMIT 50',
+            'SELECT id, file_name, file_url FROM contestation_files WHERE contestation_id = ? LIMIT 50',
             [c.id]
           );
           files = fileRows;
-        } catch (e) { /* tabla no existe — devolver lista vacía */ }
+        }
         return {
           id: c.id,
           date: c.presentation_date?.toISOString?.().split('T')[0],
@@ -1563,27 +1563,27 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
     return res.status(500).json({ error: error.sqlMessage || error.message || 'Error al guardar contestación' });
   }
 
-  // PASOS NO CRÍTICOS (best-effort): archivos y notificaciones de email.
-  // Si algo falla aquí, la contestación YA fue guardada — no devolvemos 500.
-  try {
-    if (files && Array.isArray(files) && files.length > 0) {
-      for (const file of files) {
-        if (file.name && file.url) {
-          const fileId = `cf${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-          try {
-            await pool.query(
-              `INSERT INTO contestation_files (id, contestation_id, file_name, file_url)
-               VALUES (?, ?, ?, ?)`,
-              [fileId, contestationId, file.name, file.url]
-            );
-          } catch (fileErr) {
-            console.error("Error guardando archivo de contestación (no crítico):", fileErr.message);
-          }
+  // Guardar archivos adjuntos — tabla debe existir por ensureContestationsTable()
+  const savedFiles = [];
+  if (files && Array.isArray(files) && files.length > 0 && contestationFilesTableReady) {
+    for (const file of files) {
+      if (file.name && file.url) {
+        const fileId = `cf${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        try {
+          await pool.query(
+            `INSERT INTO contestation_files (id, contestation_id, file_name, file_url)
+             VALUES (?, ?, ?, ?)`,
+            [fileId, contestationId, file.name, file.url]
+          );
+          savedFiles.push({ name: file.name, url: file.url });
+        } catch (fileErr) {
+          console.error("Error guardando archivo de contestación:",
+            { code: fileErr.code, sqlMessage: fileErr.sqlMessage, msg: fileErr.message });
         }
       }
     }
-  } catch (e) {
-    console.error("Error procesando archivos de contestación (no crítico):", e.message);
+  } else if (files && files.length > 0 && !contestationFilesTableReady) {
+    console.error("⚠️ contestation_files table NOT ready — archivos no se guardarán");
   }
 
   // Notificaciones de email — best-effort, nunca fallan la request
@@ -1608,7 +1608,7 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
     contact_method,
     registered_by: req.user.name,
     registration_date: new Date().toISOString().split('T')[0],
-    files: (files || []).map(f => ({ name: f.name, url: f.url }))
+    files: savedFiles
   });
 });
 
@@ -2618,19 +2618,18 @@ async function ensureIndexes() {
   }
 }
 
-// 🔄 Auto-curador de tabla contestations: garantiza esquema completo en cada llamada
-// Si la BD se cae y vuelve, todo se re-crea solo. Si la tabla existe con esquema antiguo,
-// agrega las columnas faltantes.
+// 🔄 Auto-curador de tabla contestations y contestation_files
 let contestationsTableReady = false;
+let contestationFilesTableReady = false;
 let ensuringContestationsTable = null;
 
 async function ensureContestationsTable() {
-  if (contestationsTableReady) return;
+  if (contestationsTableReady && contestationFilesTableReady) return;
   if (ensuringContestationsTable) return ensuringContestationsTable;
 
   ensuringContestationsTable = (async () => {
+    // Tabla principal
     try {
-      // 1. Crear tabla principal si no existe
       await pool.query(`
         CREATE TABLE IF NOT EXISTS contestations (
           id VARCHAR(100) PRIMARY KEY,
@@ -2646,23 +2645,7 @@ async function ensureContestationsTable() {
           INDEX idx_contestations_document_id (document_id)
         )
       `);
-
-      // 2. Crear tabla de archivos asociados
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS contestation_files (
-          id VARCHAR(100) PRIMARY KEY,
-          contestation_id VARCHAR(100) NOT NULL,
-          file_name VARCHAR(255) NOT NULL,
-          file_url TEXT NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          INDEX idx_contestation_files_cid (contestation_id)
-        )
-      `);
-
-      // 3. Agregar TODAS las columnas posiblemente faltantes en tablas pre-existentes.
-      // Si una tabla antigua no tiene alguna columna usada en INSERT/UPDATE, fallaría con
-      // "Unknown column". Por eso aseguramos cada una con ALTER + try-catch.
-      const alters = [
+      const colAlters = [
         `ALTER TABLE contestations ADD COLUMN presentation_date DATE`,
         `ALTER TABLE contestations ADD COLUMN authority_received VARCHAR(255)`,
         `ALTER TABLE contestations ADD COLUMN notes TEXT`,
@@ -2672,18 +2655,37 @@ async function ensureContestationsTable() {
         `ALTER TABLE contestations ADD COLUMN last_edited_by VARCHAR(50)`,
         `ALTER TABLE contestations ADD COLUMN last_edited_at TIMESTAMP NULL`,
       ];
-      for (const sql of alters) {
-        try { await pool.query(sql); } catch (e) { /* columna ya existe — esperado */ }
+      for (const sql of colAlters) {
+        try { await pool.query(sql); } catch (e) { /* ya existe */ }
       }
-
       contestationsTableReady = true;
-      console.log('✅ Tabla contestations verificada/auto-curada');
+      console.log('✅ Tabla contestations lista');
     } catch (err) {
-      console.error('⚠️ ensureContestationsTable error:', err.message);
-      // No marcar como ready — siguiente request intentará de nuevo
-    } finally {
-      ensuringContestationsTable = null;
+      console.error('⚠️ Error creando tabla contestations:', err.message);
     }
+
+    // Tabla de archivos — separada para que un fallo no bloquee la tabla principal
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS contestation_files (
+          id VARCHAR(100) PRIMARY KEY,
+          contestation_id VARCHAR(100) NOT NULL,
+          file_name VARCHAR(255) NOT NULL,
+          file_url TEXT NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      // Índice en sentencia separada — más compatible con MariaDB
+      try {
+        await pool.query(`ALTER TABLE contestation_files ADD INDEX idx_cf_contestation_id (contestation_id)`);
+      } catch (e) { /* índice ya existe */ }
+      contestationFilesTableReady = true;
+      console.log('✅ Tabla contestation_files lista');
+    } catch (err) {
+      console.error('⚠️ Error creando tabla contestation_files:', err.message);
+    }
+
+    ensuringContestationsTable = null;
   })();
 
   return ensuringContestationsTable;
