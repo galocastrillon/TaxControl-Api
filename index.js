@@ -1321,12 +1321,24 @@ app.post("/api/activities", requireAuth, async (req, res) => {
 app.put("/api/activities/:id", requireAuth, async (req, res) => {
   const { description, subDescription, dueDate, priority, status, files } = req.body;
   try {
-    await pool.query(
-      `UPDATE activities
-       SET description=?, sub_description=?, due_date=?, priority=?, status=?
-       WHERE id=?`,
-      [description, subDescription, dueDate, priority, status, req.params.id]
-    );
+    // Si el status cambia a Completed, registrar quién y cuándo completó
+    if (status === 'Completed') {
+      await pool.query(
+        `UPDATE activities
+         SET description=?, sub_description=?, due_date=?, priority=?, status=?,
+             completed_by=COALESCE(completed_by, ?), completed_at=COALESCE(completed_at, NOW())
+         WHERE id=?`,
+        [description, subDescription, dueDate, priority, status, req.user.user_id, req.params.id]
+      );
+    } else {
+      await pool.query(
+        `UPDATE activities
+         SET description=?, sub_description=?, due_date=?, priority=?, status=?,
+             completed_by=NULL, completed_at=NULL
+         WHERE id=?`,
+        [description, subDescription, dueDate, priority, status, req.params.id]
+      );
+    }
 
     // Si se incluye el array de archivos, sincronizar activity_files
     if (Array.isArray(files)) {
