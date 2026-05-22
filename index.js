@@ -1608,6 +1608,8 @@ app.get("/api/holidays", requireAuth, async (req, res) => {
 
     let rows;
     try {
+      // Asegurar que la tabla exista (auto-curador: si fue eliminada, se recrea)
+      await ensureHolidaysTable();
       // Try database first
       let query = 'SELECT * FROM holidays ORDER BY holiday_date ASC';
       const params = [];
@@ -1618,7 +1620,7 @@ app.get("/api/holidays", requireAuth, async (req, res) => {
       [rows] = await pool.query(query, params);
     } catch (dbError) {
       // Fallback to memory if DB fails
-      console.log('ℹ️ Using in-memory holidays (DB unavailable)');
+      console.log('ℹ️ Using in-memory holidays (DB unavailable):', dbError.message);
       rows = memoryHolidays;
       if (targetYear) {
         rows = rows.filter(h => h.holiday_date.getFullYear() === targetYear);
@@ -1667,6 +1669,8 @@ app.post("/api/holidays", requireAuth, async (req, res) => {
   }
 
   try {
+    // Asegurar que la tabla exista antes de insertar
+    await ensureHolidaysTable();
     const [result] = await pool.query(
       `INSERT INTO holidays (official_date, holiday_date, name, holiday_type, created_by)
        VALUES (?, ?, ?, ?, ?)`,
@@ -1730,6 +1734,8 @@ app.put("/api/holidays/:id", requireAuth, async (req, res) => {
   }
 
   try {
+    // Asegurar que la tabla exista antes de actualizar
+    await ensureHolidaysTable();
     await pool.query(
       `UPDATE holidays SET official_date=?, holiday_date=?, name=?, holiday_type=?, updated_by=? WHERE id=?`,
       [official, calendar, name, type, req.user.user_id, req.params.id]
@@ -1770,6 +1776,8 @@ app.delete("/api/holidays/:id", requireAuth, async (req, res) => {
   }
 
   try {
+    // Asegurar que la tabla exista antes de eliminar
+    await ensureHolidaysTable();
     await pool.query("DELETE FROM holidays WHERE id = ?", [req.params.id]);
     res.json({ ok: true });
   } catch (error) {
@@ -2573,9 +2581,18 @@ async function createActivityFilesTable() {
   }
 }
 
-// 🗓️ Migración: Crear tabla holidays si no existe
-async function createHolidaysTable() {
-  try {
+// 🗓️ Flag para no re-verificar la tabla en cada request (se resetea solo al reinicio)
+let holidaysTableReady = false;
+let ensuringHolidaysTable = null; // Promise compartida para evitar múltiples ejecuciones concurrentes
+
+// 🗓️ Función auto-curadora: garantiza que la tabla existe, tiene todas las columnas y datos iniciales
+// Se llama al INICIO de cada endpoint de holidays. Si la BD se cae y vuelve, todo se re-crea solo.
+async function ensureHolidaysTable() {
+  if (holidaysTableReady) return;
+  if (ensuringHolidaysTable) return ensuringHolidaysTable;
+
+  ensuringHolidaysTable = (async () => {
+    // 1. Crear tabla si no existe
     await pool.query(`
       CREATE TABLE IF NOT EXISTS holidays (
         id INT PRIMARY KEY AUTO_INCREMENT,
@@ -2583,8 +2600,8 @@ async function createHolidaysTable() {
         holiday_date DATE NOT NULL UNIQUE,
         name VARCHAR(255) NOT NULL,
         holiday_type ENUM('Ordinary', 'Extraordinary') DEFAULT 'Ordinary',
-        created_by VARCHAR(50) REFERENCES users(id),
-        updated_by VARCHAR(50) REFERENCES users(id),
+        created_by VARCHAR(50),
+        updated_by VARCHAR(50),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX idx_holiday_date (holiday_date),
@@ -2592,31 +2609,55 @@ async function createHolidaysTable() {
       )
     `);
 
-    // Migración: agregar updated_by si no existe (tablas pre-existentes)
-    try {
-      await pool.query(`ALTER TABLE holidays ADD COLUMN updated_by VARCHAR(50) REFERENCES users(id) AFTER created_by`);
-      console.log('✅ Columna updated_by agregada a holidays');
-    } catch (alterErr) {
-      if (!alterErr.message.includes('Duplicate column')) {
-        console.warn('⚠️ Error al agregar updated_by:', alterErr.message);
+    // 2. Agregar columnas faltantes (tablas pre-existentes de versiones anteriores)
+    const alters = [
+      { sql: `ALTER TABLE holidays ADD COLUMN updated_by VARCHAR(50) AFTER created_by`, name: 'updated_by' },
+      { sql: `ALTER TABLE holidays ADD COLUMN official_date DATE AFTER id`, name: 'official_date' }
+    ];
+    for (const { sql, name } of alters) {
+      try {
+        await pool.query(sql);
+        console.log(`✅ Columna ${name} agregada a holidays`);
+      } catch (err) {
+        if (!err.message.includes('Duplicate column')) throw err;
       }
     }
 
-    // Migración: agregar official_date si no existe (tablas pre-existentes)
-    try {
-      await pool.query(`ALTER TABLE holidays ADD COLUMN official_date DATE AFTER id`);
-      // Rellenar official_date con holiday_date para filas existentes sin él
-      await pool.query(`UPDATE holidays SET official_date = holiday_date WHERE official_date IS NULL`);
-      console.log('✅ Columna official_date agregada a holidays');
-    } catch (alterErr) {
-      if (!alterErr.message.includes('Duplicate column')) {
-        console.warn('⚠️ Error al agregar official_date:', alterErr.message);
+    // 3. Rellenar official_date para filas que no lo tengan (migración de datos legacy)
+    await pool.query(`UPDATE holidays SET official_date = holiday_date WHERE official_date IS NULL`);
+
+    // 4. Sembrar feriados 2026 si la tabla está vacía o falta alguno
+    for (const [officialDate, calendarDate, name, type] of ECUADOR_HOLIDAYS_2026) {
+      const [result] = await pool.query(
+        'INSERT IGNORE INTO holidays (official_date, holiday_date, name, holiday_type) VALUES (?, ?, ?, ?)',
+        [officialDate, calendarDate, name, type]
+      );
+      // Para filas existentes sin official_date, actualizarlo
+      if (result.affectedRows === 0) {
+        await pool.query(
+          'UPDATE holidays SET official_date = ? WHERE holiday_date = ? AND official_date IS NULL',
+          [officialDate, calendarDate]
+        );
       }
     }
 
-    console.log('✅ Tabla holidays verificada/creada');
+    holidaysTableReady = true;
+    console.log('✅ Tabla holidays verificada, columnas y datos iniciales listos');
+  })();
+
+  try {
+    await ensuringHolidaysTable;
+  } finally {
+    ensuringHolidaysTable = null;
+  }
+}
+
+// Alias legacy para mantener compatibilidad con startup sequence
+async function createHolidaysTable() {
+  try {
+    await ensureHolidaysTable();
   } catch (err) {
-    console.warn('⚠️ Error al crear tabla holidays:', err.message);
+    console.warn('⚠️ No se pudo verificar tabla holidays en startup (se reintentará en primera request):', err.message);
   }
 }
 
