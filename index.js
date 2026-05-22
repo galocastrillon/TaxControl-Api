@@ -1526,8 +1526,8 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
     const contestationId = `c${Date.now()}`;
     await pool.query(
       `INSERT INTO contestations
-       (id, document_id, presentation_date, authority_received, notes, contact_method, registered_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (id, document_id, presentation_date, authority_received, notes, contact_method, registered_by, registration_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
       [contestationId, documentId, date, authority, notes || '', contact_method || '', req.user.user_id]
     );
 
@@ -1578,9 +1578,10 @@ app.put("/api/contestations/:id", requireAuth, async (req, res) => {
   try {
     await pool.query(
       `UPDATE contestations
-       SET presentation_date=?, authority_received=?, notes=?, contact_method=?
+       SET presentation_date=?, authority_received=?, notes=?, contact_method=?,
+           last_edited_by=?, last_edited_at=NOW()
        WHERE id=?`,
-      [date, authority, notes, contact_method, req.params.id]
+      [date, authority, notes, contact_method, req.user.user_id, req.params.id]
     );
     res.json({ ok: true });
   } catch (error) {
@@ -2573,6 +2574,37 @@ async function ensureIndexes() {
 }
 
 // 🔄 Migración: Crear tabla activity_files si no existe
+async function ensureContestationsTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS contestations (
+        id VARCHAR(100) PRIMARY KEY,
+        document_id VARCHAR(100) NOT NULL,
+        presentation_date DATE,
+        authority_received VARCHAR(255),
+        notes TEXT,
+        contact_method VARCHAR(100),
+        registered_by VARCHAR(50),
+        registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_edited_by VARCHAR(50),
+        last_edited_at TIMESTAMP NULL,
+        INDEX idx_contestations_document_id (document_id)
+      )
+    `);
+    // Agregar columnas faltantes en tablas pre-existentes
+    const alters = [
+      `ALTER TABLE contestations ADD COLUMN registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
+      `ALTER TABLE contestations ADD COLUMN last_edited_by VARCHAR(50)`,
+      `ALTER TABLE contestations ADD COLUMN last_edited_at TIMESTAMP NULL`,
+    ];
+    for (const sql of alters) {
+      try { await pool.query(sql); } catch (e) { /* ya existe */ }
+    }
+  } catch (err) {
+    console.warn('⚠️ ensureContestationsTable:', err.message);
+  }
+}
+
 async function createActivityFilesTable() {
   try {
     await pool.query(`
@@ -2794,6 +2826,7 @@ async function syncFallbackFileToDb() {
 app.listen(PORT, async () => {
   console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
   await ensureIndexes();
+  await ensureContestationsTable();
   await createActivityFilesTable();
   await createHolidaysTable();
   await syncFallbackFileToDb(); // Migrar cambios sin BD a la BD antes del INSERT IGNORE
