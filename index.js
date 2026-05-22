@@ -1611,10 +1611,27 @@ app.get("/api/holidays", requireAuth, async (req, res) => {
       // Asegurar que la tabla exista (auto-curador: si fue eliminada, se recrea)
       await ensureHolidaysTable();
       // Try database first
-      let query = 'SELECT * FROM holidays ORDER BY holiday_date ASC';
+      let query = `
+        SELECT h.*,
+               u_created.name as created_by_name,
+               u_updated.name as updated_by_name
+        FROM holidays h
+        LEFT JOIN users u_created ON h.created_by = u_created.id
+        LEFT JOIN users u_updated ON h.updated_by = u_updated.id
+        ORDER BY h.holiday_date ASC
+      `;
       const params = [];
       if (targetYear) {
-        query = 'SELECT * FROM holidays WHERE YEAR(holiday_date) = ? ORDER BY holiday_date ASC';
+        query = `
+          SELECT h.*,
+                 u_created.name as created_by_name,
+                 u_updated.name as updated_by_name
+          FROM holidays h
+          LEFT JOIN users u_created ON h.created_by = u_created.id
+          LEFT JOIN users u_updated ON h.updated_by = u_updated.id
+          WHERE YEAR(h.holiday_date) = ?
+          ORDER BY h.holiday_date ASC
+        `;
         params.push(targetYear);
       }
       [rows] = await pool.query(query, params);
@@ -1642,9 +1659,9 @@ app.get("/api/holidays", requireAuth, async (req, res) => {
         date: calendarDate, // backward compat
         name: h.name,
         type: h.holiday_type,
-        createdBy: h.created_by,
+        createdBy: h.created_by_name || h.created_by,
         createdAt: toDateStr(h.created_at),
-        updatedBy: h.updated_by,
+        updatedBy: h.updated_by_name || h.updated_by,
         updatedAt: toDateStr(h.updated_at)
       };
     }));
