@@ -2604,8 +2604,7 @@ async function ensureHolidaysTable() {
         updated_by VARCHAR(50),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_holiday_date (holiday_date),
-        INDEX idx_holiday_year (YEAR(holiday_date))
+        INDEX idx_holiday_date (holiday_date)
       )
     `);
 
