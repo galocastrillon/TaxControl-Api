@@ -1455,10 +1455,10 @@ app.get("/api/documents/contestations/batch", requireAuth, async (req, res) => {
       ORDER BY c.document_id, c.presentation_date ASC, c.id ASC
     `, docIds);
 
-    // 2. Get all contestation files in ONE query (solo si la tabla existe)
+    // 2. Get all contestation files in ONE query
     const contestationIds = contestations.map((c) => c.id);
     let files = [];
-    if (contestationIds.length > 0 && contestationFilesTableReady) {
+    if (contestationIds.length > 0) {
       const filePlaceholders = contestationIds.map(() => '?').join(',');
       const [filesResult] = await pool.query(`
         SELECT contestation_id, file_name, file_url FROM contestation_files WHERE contestation_id IN (${filePlaceholders})
@@ -1506,14 +1506,10 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
     // Cargar archivos en paralelo
     const contestations = await Promise.all(
       rows.map(async (c) => {
-        let files = [];
-        if (contestationFilesTableReady) {
-          const [fileRows] = await pool.query(
-            'SELECT id, file_name, file_url FROM contestation_files WHERE contestation_id = ? LIMIT 50',
-            [c.id]
-          );
-          files = fileRows;
-        }
+        const [fileRows] = await pool.query(
+          'SELECT id, file_name, file_url FROM contestation_files WHERE contestation_id = ? LIMIT 50',
+          [c.id]
+        );
         return {
           id: c.id,
           date: c.presentation_date?.toISOString?.().split('T')[0],
@@ -1522,7 +1518,7 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
           contact_method: c.contact_method,
           registered_by: c.registered_by_name || c.registered_by,
           registration_date: c.registration_date?.toISOString?.().split('T')[0],
-          files: (files || []).map(f => ({ name: f.file_name, url: f.file_url }))
+          files: (fileRows || []).map(f => ({ name: f.file_name, url: f.file_url }))
         };
       })
     );
@@ -1563,9 +1559,9 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
     return res.status(500).json({ error: error.sqlMessage || error.message || 'Error al guardar contestación' });
   }
 
-  // Guardar archivos adjuntos — tabla debe existir por ensureContestationsTable()
+  // Guardar archivos adjuntos — tabla garantizada por ensureContestationsTable()
   const savedFiles = [];
-  if (files && Array.isArray(files) && files.length > 0 && contestationFilesTableReady) {
+  if (files && Array.isArray(files) && files.length > 0) {
     for (const file of files) {
       if (file.name && file.url) {
         const fileId = `cf${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -1577,13 +1573,11 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
           );
           savedFiles.push({ name: file.name, url: file.url });
         } catch (fileErr) {
-          console.error("Error guardando archivo de contestación:",
+          console.error("Error guardando archivo de contestación en POST:",
             { code: fileErr.code, sqlMessage: fileErr.sqlMessage, msg: fileErr.message });
         }
       }
     }
-  } else if (files && files.length > 0 && !contestationFilesTableReady) {
-    console.error("⚠️ contestation_files table NOT ready — archivos no se guardarán");
   }
 
   // Notificaciones de email — best-effort, nunca fallan la request
@@ -1614,16 +1608,50 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
 
 // 💬 PUT actualizar contestación
 app.put("/api/contestations/:id", requireAuth, async (req, res) => {
-  const { date, authority, notes, contact_method } = req.body;
+  const { date, authority, notes, contact_method, files } = req.body;
+  const contestationId = req.params.id;
+
   try {
     await ensureContestationsTable();
+
+    // Actualizar campos de contestación
     await pool.query(
       `UPDATE contestations
        SET presentation_date=?, authority_received=?, notes=?, contact_method=?
        WHERE id=?`,
-      [date, authority, notes, contact_method, req.params.id]
+      [date, authority, notes, contact_method, contestationId]
     );
-    res.json({ ok: true });
+
+    // Guardar archivos si se proporcionan — tabla garantizada por ensureContestationsTable()
+    let savedFiles = [];
+    if (files && Array.isArray(files) && files.length > 0) {
+      // Eliminar archivos viejos
+      try {
+        await pool.query('DELETE FROM contestation_files WHERE contestation_id = ?', [contestationId]);
+      } catch (delErr) {
+        console.error("Error eliminando archivos viejos:", delErr.message);
+      }
+
+      // Insertar nuevos archivos
+      for (const file of files) {
+        if (file.name && file.url) {
+          const fileId = `cf${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          try {
+            await pool.query(
+              `INSERT INTO contestation_files (id, contestation_id, file_name, file_url)
+               VALUES (?, ?, ?, ?)`,
+              [fileId, contestationId, file.name, file.url]
+            );
+            savedFiles.push({ name: file.name, url: file.url });
+          } catch (fileErr) {
+            console.error("Error guardando archivo en PUT:",
+              { code: fileErr.code, sqlMessage: fileErr.sqlMessage, msg: fileErr.message });
+          }
+        }
+      }
+    }
+
+    res.json({ ok: true, files: savedFiles });
   } catch (error) {
     console.error("PUT /api/contestations/:id error:",
       { code: error.code, sqlMessage: error.sqlMessage, message: error.message });
@@ -2683,6 +2711,13 @@ async function ensureContestationsTable() {
       console.log('✅ Tabla contestation_files lista');
     } catch (err) {
       console.error('⚠️ Error creando tabla contestation_files:', err.message);
+    }
+
+    // Verificar que ambas tablas están listas
+    if (!contestationsTableReady || !contestationFilesTableReady) {
+      const msg = `Failed to ensure tables ready: contestations=${contestationsTableReady}, files=${contestationFilesTableReady}`;
+      console.error('❌ ' + msg);
+      throw new Error(msg);
     }
 
     ensuringContestationsTable = null;
