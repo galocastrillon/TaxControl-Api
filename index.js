@@ -1442,6 +1442,8 @@ app.get("/api/documents/contestations/batch", requireAuth, async (req, res) => {
     const docIds = (String(req.query.ids || '')).split(',').filter(id => id.trim());
     if (docIds.length === 0) return res.json({});
 
+    await ensureContestationsTable();
+
     // 1. Fetch all contestations for these documents in ONE query
     const placeholders = docIds.map(() => '?').join(',');
     const [contestations] = await pool.query(`
@@ -1490,6 +1492,8 @@ app.get("/api/documents/contestations/batch", requireAuth, async (req, res) => {
 
 app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
   try {
+    await ensureContestationsTable();
+
     const [rows] = await pool.query(`
       SELECT c.*, u.name as registered_by_name
       FROM contestations c
@@ -1502,10 +1506,14 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
     // 🚀 Cargar archivos en PARALELO en lugar de secuencial
     const contestations = await Promise.all(
       rows.map(async (c) => {
-        const [files] = await pool.query(
-          'SELECT * FROM contestation_files WHERE contestation_id = ? LIMIT 50',
-          [c.id]
-        );
+        let files = [];
+        try {
+          const [fileRows] = await pool.query(
+            'SELECT * FROM contestation_files WHERE contestation_id = ? LIMIT 50',
+            [c.id]
+          );
+          files = fileRows;
+        } catch (e) { /* tabla no existe — devolver lista vacía */ }
         return {
           id: c.id,
           date: c.presentation_date?.toISOString?.().split('T')[0],
@@ -1521,7 +1529,9 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
 
     res.json(contestations);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error("GET /api/documents/:id/contestations error:",
+      { code: error.code, sqlMessage: error.sqlMessage, message: error.message });
+    res.status(500).json({ error: error.sqlMessage || error.message });
   }
 });
 
@@ -1534,60 +1544,79 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
     return res.status(400).json({ error: "Campos requeridos: date, authority" });
   }
 
+  // Asegurar que la tabla y sus columnas existan (auto-curador)
+  await ensureContestationsTable();
+
+  const contestationId = `c${Date.now()}`;
+
+  // PASO CRÍTICO: INSERT a contestations. Si esto falla, devolvemos 500.
   try {
-    const contestationId = `c${Date.now()}`;
     await pool.query(
       `INSERT INTO contestations
        (id, document_id, presentation_date, authority_received, notes, contact_method, registered_by)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [contestationId, documentId, date, authority, notes || '', contact_method || '', req.user.user_id]
     );
+  } catch (error) {
+    console.error("POST /api/documents/:id/contestations INSERT error:",
+      { code: error.code, errno: error.errno, sqlMessage: error.sqlMessage, message: error.message });
+    return res.status(500).json({ error: error.sqlMessage || error.message || 'Error al guardar contestación' });
+  }
 
-    // Guardar archivos asociados si existen
+  // PASOS NO CRÍTICOS (best-effort): archivos y notificaciones de email.
+  // Si algo falla aquí, la contestación YA fue guardada — no devolvemos 500.
+  try {
     if (files && Array.isArray(files) && files.length > 0) {
       for (const file of files) {
         if (file.name && file.url) {
           const fileId = `cf${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-          await pool.query(
-            `INSERT INTO contestation_files (id, contestation_id, file_name, file_url)
-             VALUES (?, ?, ?, ?)`,
-            [fileId, contestationId, file.name, file.url]
-          );
+          try {
+            await pool.query(
+              `INSERT INTO contestation_files (id, contestation_id, file_name, file_url)
+               VALUES (?, ?, ?, ?)`,
+              [fileId, contestationId, file.name, file.url]
+            );
+          } catch (fileErr) {
+            console.error("Error guardando archivo de contestación (no crítico):", fileErr.message);
+          }
         }
       }
     }
+  } catch (e) {
+    console.error("Error procesando archivos de contestación (no crítico):", e.message);
+  }
 
-    // Get document info for notifications
+  // Notificaciones de email — best-effort, nunca fallan la request
+  try {
     const [docRows] = await pool.query('SELECT title, trarnite_number FROM documents WHERE id = ?', [documentId]);
     if (docRows.length > 0) {
       const doc = docRows[0];
       const recipients = await getDocumentRecipients(documentId);
       const formattedDate = new Date(date).toLocaleDateString('es-ES');
-
       const emailTemplate = getContestationAddedEmailContent(doc.title, doc.trarnite_number, notes || 'N/A', contact_method || 'N/A', formattedDate, req.user.name);
       await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, documentId, 'contestation_added');
     }
-
-    res.status(201).json({
-      id: contestationId,
-      date,
-      authority,
-      notes,
-      contact_method,
-      registered_by: req.user.name,
-      registration_date: new Date().toISOString().split('T')[0],
-      files: (files || []).map(f => ({ name: f.name, url: f.url }))
-    });
-  } catch (error) {
-    console.error("POST /api/documents/:id/contestations error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (notifyErr) {
+    console.error("Error enviando notificación de contestación (no crítico):", notifyErr.message);
   }
+
+  res.status(201).json({
+    id: contestationId,
+    date,
+    authority,
+    notes,
+    contact_method,
+    registered_by: req.user.name,
+    registration_date: new Date().toISOString().split('T')[0],
+    files: (files || []).map(f => ({ name: f.name, url: f.url }))
+  });
 });
 
 // 💬 PUT actualizar contestación
 app.put("/api/contestations/:id", requireAuth, async (req, res) => {
   const { date, authority, notes, contact_method } = req.body;
   try {
+    await ensureContestationsTable();
     await pool.query(
       `UPDATE contestations
        SET presentation_date=?, authority_received=?, notes=?, contact_method=?
@@ -1596,17 +1625,22 @@ app.put("/api/contestations/:id", requireAuth, async (req, res) => {
     );
     res.json({ ok: true });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error("PUT /api/contestations/:id error:",
+      { code: error.code, sqlMessage: error.sqlMessage, message: error.message });
+    res.status(500).json({ error: error.sqlMessage || error.message });
   }
 });
 
 // 💬 DELETE eliminar contestación
 app.delete("/api/contestations/:id", requireAuth, async (req, res) => {
   try {
+    await ensureContestationsTable();
     await pool.query("DELETE FROM contestations WHERE id = ?", [req.params.id]);
     res.json({ ok: true });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error("DELETE /api/contestations/:id error:",
+      { code: error.code, sqlMessage: error.sqlMessage, message: error.message });
+    res.status(500).json({ error: error.sqlMessage || error.message });
   }
 });
 
@@ -2584,36 +2618,75 @@ async function ensureIndexes() {
   }
 }
 
-// 🔄 Migración: Crear tabla activity_files si no existe
+// 🔄 Auto-curador de tabla contestations: garantiza esquema completo en cada llamada
+// Si la BD se cae y vuelve, todo se re-crea solo. Si la tabla existe con esquema antiguo,
+// agrega las columnas faltantes.
+let contestationsTableReady = false;
+let ensuringContestationsTable = null;
+
 async function ensureContestationsTable() {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS contestations (
-        id VARCHAR(100) PRIMARY KEY,
-        document_id VARCHAR(100) NOT NULL,
-        presentation_date DATE,
-        authority_received VARCHAR(255),
-        notes TEXT,
-        contact_method VARCHAR(100),
-        registered_by VARCHAR(50),
-        registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_edited_by VARCHAR(50),
-        last_edited_at TIMESTAMP NULL,
-        INDEX idx_contestations_document_id (document_id)
-      )
-    `);
-    // Agregar columnas faltantes en tablas pre-existentes
-    const alters = [
-      `ALTER TABLE contestations ADD COLUMN registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
-      `ALTER TABLE contestations ADD COLUMN last_edited_by VARCHAR(50)`,
-      `ALTER TABLE contestations ADD COLUMN last_edited_at TIMESTAMP NULL`,
-    ];
-    for (const sql of alters) {
-      try { await pool.query(sql); } catch (e) { /* ya existe */ }
+  if (contestationsTableReady) return;
+  if (ensuringContestationsTable) return ensuringContestationsTable;
+
+  ensuringContestationsTable = (async () => {
+    try {
+      // 1. Crear tabla principal si no existe
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS contestations (
+          id VARCHAR(100) PRIMARY KEY,
+          document_id VARCHAR(100) NOT NULL,
+          presentation_date DATE,
+          authority_received VARCHAR(255),
+          notes TEXT,
+          contact_method VARCHAR(100),
+          registered_by VARCHAR(50),
+          registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          last_edited_by VARCHAR(50),
+          last_edited_at TIMESTAMP NULL,
+          INDEX idx_contestations_document_id (document_id)
+        )
+      `);
+
+      // 2. Crear tabla de archivos asociados
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS contestation_files (
+          id VARCHAR(100) PRIMARY KEY,
+          contestation_id VARCHAR(100) NOT NULL,
+          file_name VARCHAR(255) NOT NULL,
+          file_url TEXT NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_contestation_files_cid (contestation_id)
+        )
+      `);
+
+      // 3. Agregar TODAS las columnas posiblemente faltantes en tablas pre-existentes.
+      // Si una tabla antigua no tiene alguna columna usada en INSERT/UPDATE, fallaría con
+      // "Unknown column". Por eso aseguramos cada una con ALTER + try-catch.
+      const alters = [
+        `ALTER TABLE contestations ADD COLUMN presentation_date DATE`,
+        `ALTER TABLE contestations ADD COLUMN authority_received VARCHAR(255)`,
+        `ALTER TABLE contestations ADD COLUMN notes TEXT`,
+        `ALTER TABLE contestations ADD COLUMN contact_method VARCHAR(100)`,
+        `ALTER TABLE contestations ADD COLUMN registered_by VARCHAR(50)`,
+        `ALTER TABLE contestations ADD COLUMN registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
+        `ALTER TABLE contestations ADD COLUMN last_edited_by VARCHAR(50)`,
+        `ALTER TABLE contestations ADD COLUMN last_edited_at TIMESTAMP NULL`,
+      ];
+      for (const sql of alters) {
+        try { await pool.query(sql); } catch (e) { /* columna ya existe — esperado */ }
+      }
+
+      contestationsTableReady = true;
+      console.log('✅ Tabla contestations verificada/auto-curada');
+    } catch (err) {
+      console.error('⚠️ ensureContestationsTable error:', err.message);
+      // No marcar como ready — siguiente request intentará de nuevo
+    } finally {
+      ensuringContestationsTable = null;
     }
-  } catch (err) {
-    console.warn('⚠️ ensureContestationsTable:', err.message);
-  }
+  })();
+
+  return ensuringContestationsTable;
 }
 
 async function createActivityFilesTable() {
