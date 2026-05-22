@@ -68,20 +68,60 @@ function calculateCalendarDate(officialDateStr) {
   return `${ry}-${rm}-${rd}`;
 }
 
-// In-memory holidays for fallback when DB is not available
-// official_date = fecha del decreto, holiday_date = fecha de descanso observada (calendar_date)
-const memoryHolidays = [
-  { id: 1, official_date: new Date('2026-01-01'), holiday_date: new Date('2026-01-02'), name: 'Año Nuevo', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 2, official_date: new Date('2026-02-16'), holiday_date: new Date('2026-02-16'), name: 'Lunes de Carnaval', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 3, official_date: new Date('2026-02-17'), holiday_date: new Date('2026-02-17'), name: 'Martes de Carnaval', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 4, official_date: new Date('2026-04-03'), holiday_date: new Date('2026-04-03'), name: 'Viernes Santo', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 5, official_date: new Date('2026-05-01'), holiday_date: new Date('2026-05-01'), name: 'Día del Trabajo', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 6, official_date: new Date('2026-05-24'), holiday_date: new Date('2026-05-25'), name: 'Batalla de Pichincha', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 7, official_date: new Date('2026-08-10'), holiday_date: new Date('2026-08-10'), name: 'Primer Grito de Independencia', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 8, official_date: new Date('2026-10-09'), holiday_date: new Date('2026-10-09'), name: 'Independencia de Guayaquil', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 9, official_date: new Date('2026-11-02'), holiday_date: new Date('2026-11-02'), name: 'Día de los Difuntos / Independencia de Cuenca', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() },
-  { id: 10, official_date: new Date('2026-12-25'), holiday_date: new Date('2026-12-25'), name: 'Navidad', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: new Date() }
+// 📁 Archivo de persistencia para cambios de feriados cuando BD no está disponible
+const HOLIDAYS_FALLBACK_FILE = path.join(__dirname, 'holidays_fallback.json');
+
+function saveFallbackFile() {
+  try {
+    const data = memoryHolidays.map(h => ({
+      ...h,
+      official_date: h.official_date instanceof Date ? h.official_date.toISOString() : h.official_date,
+      holiday_date: h.holiday_date instanceof Date ? h.holiday_date.toISOString() : h.holiday_date,
+      created_at: h.created_at instanceof Date ? h.created_at.toISOString() : h.created_at,
+      updated_at: h.updated_at instanceof Date ? h.updated_at?.toISOString() : h.updated_at,
+    }));
+    fs.writeFileSync(HOLIDAYS_FALLBACK_FILE, JSON.stringify(data, null, 2), 'utf8');
+    console.log(`💾 Feriados persistidos en archivo (${memoryHolidays.length} registros)`);
+  } catch (e) {
+    console.warn('⚠️ No se pudo guardar holidays_fallback.json:', e.message);
+  }
+}
+
+function loadFallbackFile() {
+  try {
+    if (fs.existsSync(HOLIDAYS_FALLBACK_FILE)) {
+      const raw = fs.readFileSync(HOLIDAYS_FALLBACK_FILE, 'utf8');
+      const data = JSON.parse(raw);
+      return data.map(h => ({
+        ...h,
+        official_date: h.official_date ? new Date(h.official_date) : null,
+        holiday_date: new Date(h.holiday_date),
+        created_at: new Date(h.created_at),
+        updated_at: h.updated_at ? new Date(h.updated_at) : null,
+      }));
+    }
+  } catch (e) {
+    console.warn('⚠️ No se pudo cargar holidays_fallback.json:', e.message);
+  }
+  return null;
+}
+
+// Defaults de Ecuador 2026 (se usan solo si no hay archivo persistido ni BD)
+const DEFAULT_MEMORY_HOLIDAYS = [
+  { id: 1, official_date: new Date('2026-01-01'), holiday_date: new Date('2026-01-02'), name: 'Año Nuevo', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 2, official_date: new Date('2026-02-16'), holiday_date: new Date('2026-02-16'), name: 'Lunes de Carnaval', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 3, official_date: new Date('2026-02-17'), holiday_date: new Date('2026-02-17'), name: 'Martes de Carnaval', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 4, official_date: new Date('2026-04-03'), holiday_date: new Date('2026-04-03'), name: 'Viernes Santo', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 5, official_date: new Date('2026-05-01'), holiday_date: new Date('2026-05-01'), name: 'Día del Trabajo', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 6, official_date: new Date('2026-05-24'), holiday_date: new Date('2026-05-25'), name: 'Batalla de Pichincha', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 7, official_date: new Date('2026-08-10'), holiday_date: new Date('2026-08-10'), name: 'Primer Grito de Independencia', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 8, official_date: new Date('2026-10-09'), holiday_date: new Date('2026-10-09'), name: 'Independencia de Guayaquil', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 9, official_date: new Date('2026-11-02'), holiday_date: new Date('2026-11-02'), name: 'Día de los Difuntos / Independencia de Cuenca', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 10, official_date: new Date('2026-12-25'), holiday_date: new Date('2026-12-25'), name: 'Navidad', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null }
 ];
+
+// Inicializar desde archivo persistido (si existe) o usar defaults
+let memoryHolidays = loadFallbackFile() || DEFAULT_MEMORY_HOLIDAYS.map(h => ({ ...h }));
 
 // Servir archivos estáticos de uploads
 app.use('/api/files', express.static(UPLOAD_DIR));
@@ -1663,6 +1703,7 @@ app.post("/api/holidays", requireAuth, async (req, res) => {
         updated_at: null
       };
       memoryHolidays.push(newHoliday);
+      saveFallbackFile();
       return res.status(201).json({
         id: newId,
         officialDate: official,
@@ -1712,6 +1753,7 @@ app.put("/api/holidays/:id", requireAuth, async (req, res) => {
           updated_by: req.user.user_id,
           updated_at: new Date()
         };
+        saveFallbackFile();
         return res.json({ ok: true });
       }
       return res.status(404).json({ error: "Feriado no encontrado" });
@@ -1737,6 +1779,7 @@ app.delete("/api/holidays/:id", requireAuth, async (req, res) => {
       const idx = memoryHolidays.findIndex(h => h.id === parseInt(req.params.id));
       if (idx >= 0) {
         memoryHolidays.splice(idx, 1);
+        saveFallbackFile();
         return res.json({ ok: true });
       }
       return res.status(404).json({ error: "Feriado no encontrado" });
@@ -2658,11 +2701,45 @@ async function migrateActivitiesAuditTrail() {
   }
 }
 
+// 📁 Sincroniza cambios del archivo de persistencia a la BD cuando esté disponible
+// Esto asegura que ediciones hechas sin BD se persistan correctamente al reconectar
+async function syncFallbackFileToDb() {
+  if (!fs.existsSync(HOLIDAYS_FALLBACK_FILE)) return;
+
+  const fileData = loadFallbackFile();
+  if (!fileData || fileData.length === 0) return;
+
+  try {
+    let synced = 0;
+    for (const h of fileData) {
+      const officialDate = h.official_date instanceof Date ? h.official_date.toISOString().split('T')[0] : String(h.official_date).split('T')[0];
+      const calendarDate = h.holiday_date instanceof Date ? h.holiday_date.toISOString().split('T')[0] : String(h.holiday_date).split('T')[0];
+      await pool.query(
+        `INSERT INTO holidays (official_date, holiday_date, name, holiday_type, created_by, updated_by, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           official_date = VALUES(official_date),
+           name = VALUES(name),
+           holiday_type = VALUES(holiday_type),
+           updated_by = VALUES(updated_by),
+           updated_at = VALUES(updated_at)`,
+        [officialDate, calendarDate, h.name, h.holiday_type, h.created_by, h.updated_by, h.updated_at || null]
+      );
+      synced++;
+    }
+    fs.unlinkSync(HOLIDAYS_FALLBACK_FILE);
+    console.log(`✅ ${synced} feriados sincronizados desde archivo de persistencia a BD`);
+  } catch (err) {
+    console.warn('⚠️ Error al sincronizar holidays_fallback.json a BD:', err.message);
+  }
+}
+
 app.listen(PORT, async () => {
   console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
   await ensureIndexes();
   await createActivityFilesTable();
   await createHolidaysTable();
+  await syncFallbackFileToDb(); // Migrar cambios sin BD a la BD antes del INSERT IGNORE
   await migrateHolidays2026();
   await migrateActivitiesAuditTrail();
 });
