@@ -1452,7 +1452,7 @@ app.get("/api/documents/contestations/batch", requireAuth, async (req, res) => {
       FROM contestations c
       LEFT JOIN users u ON c.registered_by = u.id
       WHERE c.document_id IN (${placeholders})
-      ORDER BY c.document_id, c.id DESC
+      ORDER BY c.document_id, c.presentation_date ASC, c.id ASC
     `, docIds);
 
     // 2. Get all contestation files in ONE query
@@ -1499,7 +1499,7 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
       FROM contestations c
       LEFT JOIN users u ON c.registered_by = u.id
       WHERE c.document_id = ?
-      ORDER BY c.id DESC
+      ORDER BY c.presentation_date ASC, c.id ASC
       LIMIT 100
     `, [req.params.id]);
 
