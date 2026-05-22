@@ -1446,11 +1446,11 @@ app.get("/api/documents/contestations/batch", requireAuth, async (req, res) => {
     const placeholders = docIds.map(() => '?').join(',');
     const [contestations] = await pool.query(`
       SELECT c.id, c.document_id, c.presentation_date, c.authority_received, c.notes,
-             c.contact_method, c.registered_by, u.name as registered_by_name, c.registration_date
+             c.contact_method, c.registered_by, u.name as registered_by_name
       FROM contestations c
       LEFT JOIN users u ON c.registered_by = u.id
       WHERE c.document_id IN (${placeholders})
-      ORDER BY c.document_id, c.registration_date DESC
+      ORDER BY c.document_id, c.id DESC
     `, docIds);
 
     // 2. Get all contestation files in ONE query
@@ -1495,7 +1495,7 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
       FROM contestations c
       LEFT JOIN users u ON c.registered_by = u.id
       WHERE c.document_id = ?
-      ORDER BY c.registration_date DESC
+      ORDER BY c.id DESC
       LIMIT 100
     `, [req.params.id]);
 
@@ -1538,8 +1538,8 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
     const contestationId = `c${Date.now()}`;
     await pool.query(
       `INSERT INTO contestations
-       (id, document_id, presentation_date, authority_received, notes, contact_method, registered_by, registration_date)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+       (id, document_id, presentation_date, authority_received, notes, contact_method, registered_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [contestationId, documentId, date, authority, notes || '', contact_method || '', req.user.user_id]
     );
 
@@ -1590,10 +1590,9 @@ app.put("/api/contestations/:id", requireAuth, async (req, res) => {
   try {
     await pool.query(
       `UPDATE contestations
-       SET presentation_date=?, authority_received=?, notes=?, contact_method=?,
-           last_edited_by=?, last_edited_at=NOW()
+       SET presentation_date=?, authority_received=?, notes=?, contact_method=?
        WHERE id=?`,
-      [date, authority, notes, contact_method, req.user.user_id, req.params.id]
+      [date, authority, notes, contact_method, req.params.id]
     );
     res.json({ ok: true });
   } catch (error) {
