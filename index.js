@@ -36,8 +36,9 @@ app.use(cors({
   ],
   credentials: true
 }));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ limit: '10mb', extended: true }));
+// 50MB para soportar archivos en base64 (PDFs, imágenes grandes)
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // 🚀 Simple in-memory cache for documents list (60s TTL)
 const docsCache = new Map();
@@ -1562,8 +1563,11 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
   // Guardar archivos adjuntos — tabla garantizada por ensureContestationsTable()
   const savedFiles = [];
   if (files && Array.isArray(files) && files.length > 0) {
+    console.log(`📎 POST contestación ${contestationId}: recibidos ${files.length} archivos`);
     for (const file of files) {
       if (file.name && file.url) {
+        const urlSize = file.url.length;
+        console.log(`  → Archivo: ${file.name} (${(urlSize / 1024).toFixed(1)} KB base64)`);
         const fileId = `cf${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         try {
           await pool.query(
@@ -1572,8 +1576,9 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
             [fileId, contestationId, file.name, file.url]
           );
           savedFiles.push({ name: file.name, url: file.url });
+          console.log(`  ✅ Archivo guardado: ${file.name}`);
         } catch (fileErr) {
-          console.error("Error guardando archivo de contestación en POST:",
+          console.error(`  ❌ Error guardando archivo ${file.name}:`,
             { code: fileErr.code, sqlMessage: fileErr.sqlMessage, msg: fileErr.message });
         }
       }
@@ -1625,6 +1630,7 @@ app.put("/api/contestations/:id", requireAuth, async (req, res) => {
     // Guardar archivos si se proporcionan — tabla garantizada por ensureContestationsTable()
     let savedFiles = [];
     if (files && Array.isArray(files) && files.length > 0) {
+      console.log(`📎 PUT contestación ${contestationId}: recibidos ${files.length} archivos`);
       // Eliminar archivos viejos
       try {
         await pool.query('DELETE FROM contestation_files WHERE contestation_id = ?', [contestationId]);
@@ -1635,6 +1641,8 @@ app.put("/api/contestations/:id", requireAuth, async (req, res) => {
       // Insertar nuevos archivos
       for (const file of files) {
         if (file.name && file.url) {
+          const urlSize = file.url.length;
+          console.log(`  → Archivo: ${file.name} (${(urlSize / 1024).toFixed(1)} KB base64)`);
           const fileId = `cf${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
           try {
             await pool.query(
@@ -1643,8 +1651,9 @@ app.put("/api/contestations/:id", requireAuth, async (req, res) => {
               [fileId, contestationId, file.name, file.url]
             );
             savedFiles.push({ name: file.name, url: file.url });
+            console.log(`  ✅ Archivo guardado: ${file.name}`);
           } catch (fileErr) {
-            console.error("Error guardando archivo en PUT:",
+            console.error(`  ❌ Error guardando archivo ${file.name} en PUT:`,
               { code: fileErr.code, sqlMessage: fileErr.sqlMessage, msg: fileErr.message });
           }
         }
@@ -2699,16 +2708,20 @@ async function ensureContestationsTable() {
           id VARCHAR(100) PRIMARY KEY,
           contestation_id VARCHAR(100) NOT NULL,
           file_name VARCHAR(255) NOT NULL,
-          file_url TEXT NOT NULL,
+          file_url LONGTEXT NOT NULL,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
+      // CRÍTICO: convertir file_url a LONGTEXT si está en TEXT (archivos base64 grandes)
+      try {
+        await pool.query(`ALTER TABLE contestation_files MODIFY COLUMN file_url LONGTEXT NOT NULL`);
+      } catch (e) { /* ya es LONGTEXT */ }
       // Índice en sentencia separada — más compatible con MariaDB
       try {
         await pool.query(`ALTER TABLE contestation_files ADD INDEX idx_cf_contestation_id (contestation_id)`);
       } catch (e) { /* índice ya existe */ }
       contestationFilesTableReady = true;
-      console.log('✅ Tabla contestation_files lista');
+      console.log('✅ Tabla contestation_files lista (file_url=LONGTEXT)');
     } catch (err) {
       console.error('⚠️ Error creando tabla contestation_files:', err.message);
     }
@@ -2733,10 +2746,15 @@ async function createActivityFilesTable() {
         id VARCHAR(100) PRIMARY KEY,
         activity_id VARCHAR(50) NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
         file_name VARCHAR(255) NOT NULL,
-        file_url TEXT NOT NULL,
+        file_url LONGTEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    // CRÍTICO: convertir file_url a LONGTEXT si está en TEXT (archivos base64 grandes)
+    try {
+      await pool.query(`ALTER TABLE activity_files MODIFY COLUMN file_url LONGTEXT NOT NULL`);
+    } catch (e) { /* ya es LONGTEXT */ }
 
     // Crear índice si no existe
     try {
@@ -2745,7 +2763,7 @@ async function createActivityFilesTable() {
       // Índice ya existe, ignorar
     }
 
-    console.log('✅ Tabla activity_files verificada/creada');
+    console.log('✅ Tabla activity_files verificada/creada (file_url=LONGTEXT)');
   } catch (err) {
     console.warn('⚠️ Error al crear tabla activity_files:', err.message);
   }
