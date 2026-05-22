@@ -140,15 +140,8 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: MAX_FILE_SIZE },
-  fileFilter: (req, file, cb) => {
-    const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
-    if (allowed.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Solo se permiten archivos PDF e imágenes (JPG, PNG)'));
-    }
-  }
+  limits: { fileSize: MAX_FILE_SIZE }
+  // Sin fileFilter — se permite cualquier tipo de archivo
 });
 
 // 3️⃣ Crear pool MariaDB (GLOBAL)
