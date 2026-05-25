@@ -2719,11 +2719,11 @@ async function ensureContestationsTable() {
       console.error('⚠️ Error creando tabla contestation_files:', err.message);
     }
 
-    // Verificar que ambas tablas están listas
+    // If tables couldn't be created, allow the server to continue with in-memory fallback
     if (!contestationsTableReady || !contestationFilesTableReady) {
-      const msg = `Failed to ensure tables ready: contestations=${contestationsTableReady}, files=${contestationFilesTableReady}`;
-      console.error('❌ ' + msg);
-      throw new Error(msg);
+      console.warn(`⚠️ Not all contestation tables ready: contestations=${contestationsTableReady}, files=${contestationFilesTableReady}. Server will use in-memory fallback.`);
+    } else {
+      console.log('✅ All contestation tables verified and ready');
     }
 
     ensuringContestationsTable = null;
@@ -2957,11 +2957,47 @@ async function syncFallbackFileToDb() {
 
 app.listen(PORT, async () => {
   console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
-  await ensureIndexes();
-  await ensureContestationsTable();
-  await createActivityFilesTable();
-  await createHolidaysTable();
-  await syncFallbackFileToDb(); // Migrar cambios sin BD a la BD antes del INSERT IGNORE
-  await migrateHolidays2026();
-  await migrateActivitiesAuditTrail();
+
+  // Initialize tables with graceful error handling — don't crash the server
+  try {
+    await ensureIndexes();
+  } catch (err) {
+    console.warn('⚠️ ensureIndexes failed (non-critical):', err.message);
+  }
+
+  try {
+    await ensureContestationsTable();
+  } catch (err) {
+    console.warn('⚠️ ensureContestationsTable failed (non-critical):', err.message);
+  }
+
+  try {
+    await createActivityFilesTable();
+  } catch (err) {
+    console.warn('⚠️ createActivityFilesTable failed (non-critical):', err.message);
+  }
+
+  try {
+    await createHolidaysTable();
+  } catch (err) {
+    console.warn('⚠️ createHolidaysTable failed (non-critical):', err.message);
+  }
+
+  try {
+    await syncFallbackFileToDb();
+  } catch (err) {
+    console.warn('⚠️ syncFallbackFileToDb failed (non-critical):', err.message);
+  }
+
+  try {
+    await migrateHolidays2026();
+  } catch (err) {
+    console.warn('⚠️ migrateHolidays2026 failed (non-critical):', err.message);
+  }
+
+  try {
+    await migrateActivitiesAuditTrail();
+  } catch (err) {
+    console.warn('⚠️ migrateActivitiesAuditTrail failed (non-critical):', err.message);
+  }
 });
