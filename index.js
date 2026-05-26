@@ -124,8 +124,69 @@ const DEFAULT_MEMORY_HOLIDAYS = [
 // Inicializar desde archivo persistido (si existe) o usar defaults
 let memoryHolidays = loadFallbackFile() || DEFAULT_MEMORY_HOLIDAYS.map(h => ({ ...h }));
 
-// Servir archivos estáticos de uploads
-app.use('/api/files', express.static(UPLOAD_DIR));
+// Servir archivos estáticos de uploads con MIME types correctos
+app.use('/api/files', express.static(UPLOAD_DIR, {
+  setHeaders: (res, filePath) => {
+    // PDF files
+    if (filePath.endsWith('.pdf')) {
+      res.set('Content-Type', 'application/pdf');
+      res.set('Content-Disposition', 'inline; filename*=UTF-8\'\'');
+    }
+    // Otros tipos comunes
+    else if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) {
+      res.set('Content-Type', 'image/jpeg');
+    }
+    else if (filePath.endsWith('.png')) {
+      res.set('Content-Type', 'image/png');
+    }
+    else if (filePath.endsWith('.docx')) {
+      res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    }
+    else if (filePath.endsWith('.doc')) {
+      res.set('Content-Type', 'application/msword');
+    }
+    // Para cualquier otro tipo, dejar que express infiera
+  }
+}));
+
+// Endpoint específico para descargar archivos con nombre original
+app.get('/api/download/:filename', requireAuth, async (req, res) => {
+  try {
+    const filename = req.params.filename;
+    // Validar que el filename no contiene ../ (prevenir directory traversal)
+    if (filename.includes('..') || filename.includes('/')) {
+      return res.status(400).json({ error: 'Invalid filename' });
+    }
+
+    const filePath = path.join(UPLOAD_DIR, filename);
+
+    // Verificar que el archivo existe
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    // Determinar MIME type
+    let contentType = 'application/octet-stream';
+    if (filename.endsWith('.pdf')) {
+      contentType = 'application/pdf';
+    } else if (filename.endsWith('.jpg') || filename.endsWith('.jpeg')) {
+      contentType = 'image/jpeg';
+    } else if (filename.endsWith('.png')) {
+      contentType = 'image/png';
+    } else if (filename.endsWith('.docx')) {
+      contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    }
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', 'attachment');
+
+    // Enviar archivo
+    res.sendFile(filePath);
+  } catch (error) {
+    console.error('Download error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // Configurar multer para carga de archivos
 const storage = multer.diskStorage({
