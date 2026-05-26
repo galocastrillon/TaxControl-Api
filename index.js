@@ -206,24 +206,30 @@ async function createCompany(name) {
   }
 
   // Fallback con retry: generar id explícito y manejar race conditions
-  for (let attempt = 0; attempt < 10; attempt++) {
+  let currentMaxId = null;
+  for (let attempt = 0; attempt < 15; attempt++) {
     // Re-verificar antes de cada intento (puede haberse creado en otro proceso)
     const [existing] = await pool.query('SELECT id FROM companies WHERE name = ?', [name]);
     if (existing.length > 0) return existing[0].id;
 
-    const [maxRows] = await pool.query('SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM companies');
-    const newId = maxRows[0].next_id;
+    // En primer intento, obtener MAX real. En siguientes, incrementar manualmente
+    if (attempt === 0) {
+      const [maxRows] = await pool.query('SELECT COALESCE(MAX(id), 0) AS max_id FROM companies');
+      currentMaxId = maxRows[0].max_id;
+    }
+
+    const newId = currentMaxId + attempt + 1;
     try {
       await pool.query('INSERT INTO companies (id, name) VALUES (?, ?)', [newId, name]);
       return newId;
     } catch (err) {
       const msg = err.message || '';
       if (!msg.includes('Duplicate entry')) throw err;
-      // Race condition: otro proceso usó este id, reintentar con nuevo MAX
-      console.log(`[createCompany] Duplicate id=${newId}, retry ${attempt + 1}/10`);
+      // Race condition: otro proceso usó este id, reintentar con siguiente id
+      console.log(`[createCompany] Duplicate id=${newId} para '${name}', intentando id=${newId + 1}`);
     }
   }
-  throw new Error(`No se pudo crear la company '${name}' después de varios intentos`);
+  throw new Error(`No se pudo crear la company '${name}' después de 15 intentos con ids duplicados`);
 }
 
 
