@@ -208,45 +208,6 @@ app.use('/api/files', express.static(UPLOAD_DIR, {
   }
 }));
 
-// Endpoint específico para descargar archivos con nombre original
-app.get('/api/download/:filename', requireAuth, async (req, res) => {
-  try {
-    const filename = req.params.filename;
-    // Validar que el filename no contiene ../ (prevenir directory traversal)
-    if (filename.includes('..') || filename.includes('/')) {
-      return res.status(400).json({ error: 'Invalid filename' });
-    }
-
-    const filePath = path.join(UPLOAD_DIR, filename);
-
-    // Verificar que el archivo existe
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'File not found' });
-    }
-
-    // Determinar MIME type
-    let contentType = 'application/octet-stream';
-    if (filename.endsWith('.pdf')) {
-      contentType = 'application/pdf';
-    } else if (filename.endsWith('.jpg') || filename.endsWith('.jpeg')) {
-      contentType = 'image/jpeg';
-    } else if (filename.endsWith('.png')) {
-      contentType = 'image/png';
-    } else if (filename.endsWith('.docx')) {
-      contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-    }
-
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', 'attachment');
-
-    // Enviar archivo
-    res.sendFile(filePath);
-  } catch (error) {
-    console.error('Download error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // Configurar multer para carga de archivos
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -629,6 +590,41 @@ app.post("/api/auth/logout", async (req, res) => {
   res.json({ ok: true });
 });
 
+// Descargar archivos con nombre original
+app.get('/api/download/:filename', requireAuth, async (req, res) => {
+  try {
+    const filename = req.params.filename;
+    if (filename.includes('..') || filename.includes('/')) {
+      return res.status(400).json({ error: 'Invalid filename' });
+    }
+
+    const filePath = path.join(UPLOAD_DIR, filename);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    let contentType = 'application/octet-stream';
+    if (filename.endsWith('.pdf')) {
+      contentType = 'application/pdf';
+    } else if (filename.endsWith('.jpg') || filename.endsWith('.jpeg')) {
+      contentType = 'image/jpeg';
+    } else if (filename.endsWith('.png')) {
+      contentType = 'image/png';
+    } else if (filename.endsWith('.docx')) {
+      contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    }
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', 'attachment');
+    res.sendFile(filePath);
+  } catch (error) {
+    console.error('Download error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
 // 9️⃣ Usuario actual
 app.post("/api/auth/change-password", requireAuth, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
@@ -838,6 +834,7 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       id: d.id,
       title: d.title,
       trarniteNumber: d.trarnite_number,
+      documentNumber: d.document_number,
       companyId: d.company_id,
       company: d.company_id || d.company_name,
       authority: d.authority,
@@ -1162,7 +1159,7 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
     });
 
     res.json({
-      id: d.id, title: d.title, trarniteNumber: d.trarnite_number,
+      id: d.id, title: d.title, trarniteNumber: d.trarnite_number, documentNumber: d.document_number,
       company: d.company_id || d.company_name, authority: d.authority,
       department: d.department,
       notificationDate: d.notification_date?.toISOString?.().split('T')[0],
