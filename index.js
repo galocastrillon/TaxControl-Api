@@ -1133,12 +1133,31 @@ app.post("/api/documents", requireAuth, async (req, res) => {
     return res.status(400).json({ error: "Campos requeridos: title, trarniteNumber, authority, dueDate" });
   }
 
-  // Asegurar que los campos NOT NULL tengan valores
   const notificationDate = d.notificationDate || new Date().toISOString().split('T')[0];
   const dueDate = d.dueDate || new Date().toISOString().split('T')[0];
   const dayType = d.dayType || 'Días hábiles';
 
   try {
+    // Verificar que trarnite_number no exista
+    const [existing] = await pool.query('SELECT id FROM documents WHERE trarnite_number = ?', [d.trarniteNumber]);
+    if (existing.length > 0) {
+      return res.status(409).json({ error: `El número de trámite '${d.trarniteNumber}' ya existe en la base de datos` });
+    }
+
+    let companyId = null;
+
+    // Si se proporciona company, buscar o crear
+    if (d.company) {
+      let [companies] = await pool.query('SELECT id FROM companies WHERE name = ?', [d.company]);
+      if (companies.length > 0) {
+        companyId = companies[0].id;
+      } else {
+        // Crear la empresa si no existe
+        const [result] = await pool.query('INSERT INTO companies (name) VALUES (?)', [d.company]);
+        companyId = result.insertId;
+      }
+    }
+
     const id = d.id || `d${Date.now()}`;
     await pool.query(`
       INSERT INTO documents
@@ -1147,7 +1166,7 @@ app.post("/api/documents", requireAuth, async (req, res) => {
          summary_es, summary_cn, file_name, file_url, related_doc_id, created_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
-      id, d.title, d.trarniteNumber, d.company || null, d.authority, d.department || null,
+      id, d.title, d.trarniteNumber, companyId, d.authority, d.department || null,
       notificationDate, d.daysLimit || 0, dayType, dueDate,
       d.status || "Inicializado", d.summaryEs || '', d.summaryCn || '',
       d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.user_id
@@ -1165,23 +1184,42 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
   const d = req.body;
   const id = req.params.id;
 
-  // Validar campos requeridos
   if (!d.title || !d.trarniteNumber || !d.authority || !d.dueDate) {
     return res.status(400).json({ error: "Campos requeridos: title, trarniteNumber, authority, dueDate" });
   }
 
-  // Asegurar que los campos NOT NULL tengan valores
   const notificationDate = d.notificationDate || new Date().toISOString().split('T')[0];
   const dueDate = d.dueDate || new Date().toISOString().split('T')[0];
   const dayType = d.dayType || 'Días hábiles';
 
   try {
-    // Get the old document data
     const [oldDocRows] = await pool.query('SELECT * FROM documents WHERE id = ?', [id]);
     if (oldDocRows.length === 0) {
       return res.status(404).json({ error: 'Documento no encontrado' });
     }
     const oldDoc = oldDocRows[0];
+
+    // Verificar que trarnite_number no sea duplicado (a menos que sea el mismo documento)
+    if (d.trarniteNumber !== oldDoc.trarnite_number) {
+      const [existing] = await pool.query('SELECT id FROM documents WHERE trarnite_number = ?', [d.trarniteNumber]);
+      if (existing.length > 0) {
+        return res.status(409).json({ error: `El número de trámite '${d.trarniteNumber}' ya existe en otro documento` });
+      }
+    }
+
+    let companyId = null;
+
+    // Si se proporciona company, buscar o crear
+    if (d.company) {
+      let [companies] = await pool.query('SELECT id FROM companies WHERE name = ?', [d.company]);
+      if (companies.length > 0) {
+        companyId = companies[0].id;
+      } else {
+        // Crear la empresa si no existe
+        const [result] = await pool.query('INSERT INTO companies (name) VALUES (?)', [d.company]);
+        companyId = result.insertId;
+      }
+    }
 
     // Update the document
     const [result] = await pool.query(`
@@ -1192,7 +1230,7 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
         file_name = ?, file_url = ?, related_doc_id = ?, last_edited_by = ?, last_edited_at = NOW()
       WHERE id = ?
     `, [
-      d.title, d.trarniteNumber, d.company || null, d.authority,
+      d.title, d.trarniteNumber, companyId, d.authority,
       d.department || null, notificationDate, d.daysLimit || 0, dayType,
       dueDate, d.status || 'Inicializado', d.summaryEs || '', d.summaryCn || '',
       d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.user_id, id
