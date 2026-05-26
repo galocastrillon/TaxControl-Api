@@ -645,13 +645,38 @@ app.get('/api/download/:filename', requireAuth, async (req, res) => {
   try {
     const filename = req.params.filename;
     if (filename.includes('..') || filename.includes('/')) {
+      console.warn(`[download] Filename inválido rechazado: '${filename}'`);
       return res.status(400).json({ error: 'Invalid filename' });
     }
 
     const filePath = path.join(UPLOAD_DIR, filename);
 
     if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'File not found' });
+      // Listar archivos disponibles para debugging
+      let availableFiles = [];
+      try {
+        availableFiles = fs.readdirSync(UPLOAD_DIR);
+      } catch (e) {
+        console.error(`[download] No se pudo leer UPLOAD_DIR=${UPLOAD_DIR}:`, e.message);
+      }
+      console.error(`[download] Archivo NO encontrado:`);
+      console.error(`  - Filename solicitado: ${filename}`);
+      console.error(`  - Path completo: ${filePath}`);
+      console.error(`  - UPLOAD_DIR: ${UPLOAD_DIR}`);
+      console.error(`  - Archivos disponibles en UPLOAD_DIR: ${availableFiles.length}`);
+      if (availableFiles.length > 0 && availableFiles.length < 20) {
+        console.error(`  - Lista: ${availableFiles.join(', ')}`);
+      }
+      // Mensaje informativo: probable causa = falta volumen persistente en Coolify
+      const hint = availableFiles.length === 0
+        ? 'El directorio de uploads está vacío - probablemente el contenedor fue redesplegado sin un volumen persistente configurado.'
+        : 'El archivo no existe en el servidor (posiblemente fue eliminado o el contenedor fue redesplegado).';
+      return res.status(404).json({
+        error: 'File not found',
+        filename,
+        hint,
+        availableFilesCount: availableFiles.length
+      });
     }
 
     let contentType = 'application/octet-stream';
@@ -665,11 +690,12 @@ app.get('/api/download/:filename', requireAuth, async (req, res) => {
       contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     }
 
+    console.log(`[download] Sirviendo archivo: ${filename} (${contentType})`);
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', 'attachment');
     res.sendFile(filePath);
   } catch (error) {
-    console.error('Download error:', error);
+    console.error('[download] Error inesperado:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -3273,4 +3299,57 @@ app.listen(PORT, async () => {
   } catch (err) {
     console.warn('⚠️ migrateDocumentUniqueConstraints failed (non-critical):', err.message);
   }
+
+  // 📦 Verificación de almacenamiento persistente al arrancar
+  try {
+    await checkUploadStorageHealth();
+  } catch (err) {
+    console.warn('⚠️ checkUploadStorageHealth failed (non-critical):', err.message);
+  }
 });
+
+// 📦 Verifica salud del almacenamiento de archivos al inicio
+// Detecta si hay referencias en BD a archivos que ya no existen en disco
+// (típicamente por contenedor sin volumen persistente configurado).
+async function checkUploadStorageHealth() {
+  console.log(`📦 [storage-check] UPLOAD_DIR=${UPLOAD_DIR}`);
+  let diskFiles = [];
+  try {
+    diskFiles = fs.readdirSync(UPLOAD_DIR);
+    console.log(`📦 [storage-check] Archivos en disco: ${diskFiles.length}`);
+  } catch (e) {
+    console.error(`📦 [storage-check] ❌ No se pudo leer UPLOAD_DIR:`, e.message);
+    return;
+  }
+
+  try {
+    const [docsWithFiles] = await pool.query(
+      "SELECT id, file_url FROM documents WHERE file_url IS NOT NULL AND file_url != ''"
+    );
+    if (docsWithFiles.length === 0) {
+      console.log(`📦 [storage-check] No hay documentos con archivos en BD`);
+      return;
+    }
+
+    let missing = 0;
+    const missingExamples = [];
+    for (const doc of docsWithFiles) {
+      const filename = doc.file_url.split('/').pop();
+      if (filename && !diskFiles.includes(filename)) {
+        missing++;
+        if (missingExamples.length < 3) missingExamples.push({ docId: doc.id, filename });
+      }
+    }
+
+    if (missing === 0) {
+      console.log(`📦 [storage-check] ✅ Todos los archivos en BD existen en disco (${docsWithFiles.length} documentos)`);
+    } else {
+      console.warn(`📦 [storage-check] ⚠️ ${missing}/${docsWithFiles.length} archivos referenciados en BD NO existen en disco`);
+      console.warn(`📦 [storage-check] Ejemplos:`, missingExamples);
+      console.warn(`📦 [storage-check] 💡 Probable causa: contenedor sin volumen persistente para ${UPLOAD_DIR}`);
+      console.warn(`📦 [storage-check] 💡 Solución: configurar volumen persistente en Coolify para ${UPLOAD_DIR}`);
+    }
+  } catch (err) {
+    console.error(`📦 [storage-check] Error consultando BD:`, err.message);
+  }
+}
