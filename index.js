@@ -1255,7 +1255,7 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
 
     res.json({
       id: d.id, title: d.title, trarniteNumber: d.trarnite_number, documentNumber: d.document_number,
-      company: d.company_id || d.company_name, authority: d.authority,
+      company: d.company_name || null, authority: d.authority,
       department: d.department,
       notificationDate: d.notification_date?.toISOString?.().split('T')[0],
       daysLimit: d.days_limit, dayType: d.day_type,
