@@ -175,11 +175,27 @@ const COMPANY_ALIASES = {
   'proyecto hidroelectrico hidrocruz s.a.': 'HCSA'
 };
 
+const VALID_COMPANY_ACRONYMS = ['ECSA', 'EXSA', 'HCSA', 'PCSA', 'MMSA'];
+
 // Función para normalizar nombre de empresa
 const normalizeCompanyName = (name) => {
   if (!name) return null;
-  const normalized = name.trim().toLowerCase().replace(/\s+/g, ' ');
-  return COMPANY_ALIASES[normalized] || name.trim();
+  const trimmed = name.trim();
+  const normalized = trimmed.toLowerCase().replace(/\s+/g, ' ');
+
+  // 1. Match exacto en aliases
+  if (COMPANY_ALIASES[normalized]) return COMPANY_ALIASES[normalized];
+
+  // 2. Defensa: si contiene un acrónimo válido seguido de no-letras
+  // (ej: "PCSA010101", "PCSA-01", "ECSA 2026"), devolver el acrónimo.
+  // Esto evita propagar nombres espurios generados por análisis de IA.
+  const upper = trimmed.toUpperCase();
+  for (const acronym of VALID_COMPANY_ACRONYMS) {
+    const re = new RegExp(`(^|[^A-Z])${acronym}([^A-Z]|$)`);
+    if (re.test(upper)) return acronym;
+  }
+
+  return trimmed;
 };
 
 // Crear una nueva company. Tolera tablas sin AUTO_INCREMENT en id
