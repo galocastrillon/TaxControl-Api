@@ -185,27 +185,45 @@ const normalizeCompanyName = (name) => {
 // Crear una nueva company. Tolera tablas sin AUTO_INCREMENT en id
 // (ej. esquemas legacy donde id es NOT NULL sin default).
 async function createCompany(name) {
+  // Defensa: verificar siempre primero si la company ya existe
+  const [preCheck] = await pool.query('SELECT id FROM companies WHERE name = ?', [name]);
+  if (preCheck.length > 0) return preCheck[0].id;
+
+  // Intento 1: INSERT normal (funciona si hay AUTO_INCREMENT)
   try {
     const [result] = await pool.query('INSERT INTO companies (name) VALUES (?)', [name]);
     if (result.insertId) return result.insertId;
   } catch (err) {
-    // Si es error de clave duplicada, buscar el id existente
-    if (err.message && err.message.includes('Duplicate entry')) {
+    const msg = err.message || '';
+    // Si fue duplicate entry, otra request creó la company - re-buscar
+    if (msg.includes('Duplicate entry')) {
       const [existing] = await pool.query('SELECT id FROM companies WHERE name = ?', [name]);
-      if (existing.length > 0) {
-        return existing[0].id;
-      }
-    }
-    // Si el error NO es por falta de default en id, relanzarlo
-    if (!err.message || !err.message.includes("doesn't have a default value")) {
+      if (existing.length > 0) return existing[0].id;
+      // Fall through: probablemente conflicto con id default, intentar con id explícito
+    } else if (!msg.includes("doesn't have a default value")) {
       throw err;
     }
   }
-  // Fallback: generar id explícito con MAX(id)+1
-  const [maxRows] = await pool.query('SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM companies');
-  const newId = maxRows[0].next_id;
-  await pool.query('INSERT INTO companies (id, name) VALUES (?, ?)', [newId, name]);
-  return newId;
+
+  // Fallback con retry: generar id explícito y manejar race conditions
+  for (let attempt = 0; attempt < 10; attempt++) {
+    // Re-verificar antes de cada intento (puede haberse creado en otro proceso)
+    const [existing] = await pool.query('SELECT id FROM companies WHERE name = ?', [name]);
+    if (existing.length > 0) return existing[0].id;
+
+    const [maxRows] = await pool.query('SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM companies');
+    const newId = maxRows[0].next_id;
+    try {
+      await pool.query('INSERT INTO companies (id, name) VALUES (?, ?)', [newId, name]);
+      return newId;
+    } catch (err) {
+      const msg = err.message || '';
+      if (!msg.includes('Duplicate entry')) throw err;
+      // Race condition: otro proceso usó este id, reintentar con nuevo MAX
+      console.log(`[createCompany] Duplicate id=${newId}, retry ${attempt + 1}/10`);
+    }
+  }
+  throw new Error(`No se pudo crear la company '${name}' después de varios intentos`);
 }
 
 
