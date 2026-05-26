@@ -1350,6 +1350,7 @@ app.post("/api/documents", requireAuth, async (req, res) => {
 app.put("/api/documents/:id", requireAuth, async (req, res) => {
   const d = req.body;
   const id = req.params.id;
+  console.log('📥 PUT /api/documents/:id recibido company:', d.company, 'state:', d);
 
   if (!d.title || !d.authority || !d.dueDate) {
     return res.status(400).json({ error: "Campos requeridos: title, authority, dueDate" });
