@@ -3092,6 +3092,31 @@ async function migrateDocumentNumberColumn() {
   }
 }
 
+// 🔄 Migración: Remover UNIQUE en trarnite_number, agregar UNIQUE en document_number
+async function migrateDocumentUniqueConstraints() {
+  try {
+    // Remover UNIQUE constraint en trarnite_number (si existe)
+    try {
+      await pool.query("ALTER TABLE documents DROP INDEX trarnite_number");
+      console.log('✅ Constraint UNIQUE en trarnite_number removido');
+    } catch (err) {
+      // Index no existe o no se pudo remover, continuar
+    }
+
+    // Agregar UNIQUE constraint en document_number (si no existe)
+    const [indexes] = await pool.query(
+      "SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_NAME = 'documents' AND INDEX_NAME = 'document_number'"
+    );
+    if (indexes.length === 0) {
+      // Solo agregar si no existe, pero permitir NULLs (documentNumber es opcional)
+      await pool.query("ALTER TABLE documents ADD UNIQUE KEY idx_document_number (document_number)");
+      console.log('✅ UNIQUE constraint en document_number agregado');
+    }
+  } catch (err) {
+    console.warn('⚠️ migrateDocumentUniqueConstraints: ', err.message);
+  }
+}
+
 async function migrateActivitiesAuditTrail() {
   try {
     // Obtener primer admin para asignar a actividades antiguas
@@ -3210,5 +3235,11 @@ app.listen(PORT, async () => {
     await migrateDocumentNumberColumn();
   } catch (err) {
     console.warn('⚠️ migrateDocumentNumberColumn failed (non-critical):', err.message);
+  }
+
+  try {
+    await migrateDocumentUniqueConstraints();
+  } catch (err) {
+    console.warn('⚠️ migrateDocumentUniqueConstraints failed (non-critical):', err.message);
   }
 });
