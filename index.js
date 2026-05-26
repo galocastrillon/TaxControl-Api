@@ -182,6 +182,25 @@ const normalizeCompanyName = (name) => {
   return COMPANY_ALIASES[normalized] || name.trim();
 };
 
+// Crear una nueva company. Tolera tablas sin AUTO_INCREMENT en id
+// (ej. esquemas legacy donde id es NOT NULL sin default).
+async function createCompany(name) {
+  try {
+    const [result] = await pool.query('INSERT INTO companies (name) VALUES (?)', [name]);
+    if (result.insertId) return result.insertId;
+  } catch (err) {
+    // Si el error NO es por falta de default en id, relanzarlo
+    if (!err.message || !err.message.includes("doesn't have a default value")) {
+      throw err;
+    }
+  }
+  // Fallback: generar id explícito con MAX(id)+1
+  const [maxRows] = await pool.query('SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM companies');
+  const newId = maxRows[0].next_id;
+  await pool.query('INSERT INTO companies (id, name) VALUES (?, ?)', [newId, name]);
+  return newId;
+}
+
 
 // Servir archivos estáticos de uploads con MIME types correctos
 app.use('/api/files', express.static(UPLOAD_DIR, {
@@ -1220,8 +1239,7 @@ app.post("/api/documents", requireAuth, async (req, res) => {
       if (companies.length > 0) {
         companyId = companies[0].id;
       } else {
-        const [result] = await pool.query('INSERT INTO companies (name) VALUES (?)', [normalizedCompany]);
-        companyId = result.insertId;
+        companyId = await createCompany(normalizedCompany);
       }
     }
 
@@ -1296,8 +1314,7 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
       if (companies.length > 0) {
         companyId = companies[0].id;
       } else {
-        const [result] = await pool.query('INSERT INTO companies (name) VALUES (?)', [normalizedCompany]);
-        companyId = result.insertId;
+        companyId = await createCompany(normalizedCompany);
       }
     }
 
