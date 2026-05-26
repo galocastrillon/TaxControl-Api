@@ -178,24 +178,27 @@ const COMPANY_ALIASES = {
 const VALID_COMPANY_ACRONYMS = ['ECSA', 'EXSA', 'HCSA', 'PCSA', 'MMSA'];
 
 // Función para normalizar nombre de empresa
+// ESTRICTA: solo mapea variaciones CONOCIDAS de los acrónimos válidos
+// via COMPANY_ALIASES. No hace fuzzy matching de strings ruidosos.
 const normalizeCompanyName = (name) => {
   if (!name) return null;
-  const trimmed = name.trim();
-  const normalized = trimmed.toLowerCase().replace(/\s+/g, ' ');
+  const normalized = name.trim().toLowerCase().replace(/\s+/g, ' ');
 
-  // 1. Match exacto en aliases
-  if (COMPANY_ALIASES[normalized]) return COMPANY_ALIASES[normalized];
+  // Solo aceptar matches explícitos en aliases
+  const result = COMPANY_ALIASES[normalized] || null;
 
-  // 2. Defensa: si contiene un acrónimo válido seguido de no-letras
-  // (ej: "PCSA010101", "PCSA-01", "ECSA 2026"), devolver el acrónimo.
-  // Esto evita propagar nombres espurios generados por análisis de IA.
-  const upper = trimmed.toUpperCase();
-  for (const acronym of VALID_COMPANY_ACRONYMS) {
-    const re = new RegExp(`(^|[^A-Z])${acronym}([^A-Z]|$)`);
-    if (re.test(upper)) return acronym;
+  // Si el resultado es uno de los acrónimos válidos, devolverlo
+  if (result && VALID_COMPANY_ACRONYMS.includes(result)) {
+    return result;
   }
 
-  return trimmed;
+  // Si el input ya es exactamente uno de los acrónimos, aceptarlo
+  if (VALID_COMPANY_ACRONYMS.includes(name.trim().toUpperCase())) {
+    return name.trim().toUpperCase();
+  }
+
+  // Cualquier otro valor es inválido - no aceptar
+  return null;
 };
 
 // Crear una nueva company. Tolera tablas sin AUTO_INCREMENT en id
@@ -1305,9 +1308,15 @@ app.post("/api/documents", requireAuth, async (req, res) => {
 
     let companyId = null;
 
-    // Si se proporciona company, normalizar y buscar o crear
+    // Si se proporciona company, normalizar y validar
     if (d.company) {
       const normalizedCompany = normalizeCompanyName(d.company);
+      // Rechazar si el nombre no es una de las 5 compañías válidas
+      if (!normalizedCompany) {
+        return res.status(400).json({
+          error: `Compañía inválida: '${d.company}'. Solo se permiten: ECSA, EXSA, HCSA, PCSA, MMSA`
+        });
+      }
       let [companies] = await pool.query('SELECT id FROM companies WHERE name = ?', [normalizedCompany]);
       if (companies.length > 0) {
         companyId = companies[0].id;
@@ -1380,9 +1389,15 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
 
     let companyId = null;
 
-    // Si se proporciona company, normalizar y buscar o crear
+    // Si se proporciona company, normalizar y validar
     if (d.company) {
       const normalizedCompany = normalizeCompanyName(d.company);
+      // Rechazar si el nombre no es una de las 5 compañías válidas
+      if (!normalizedCompany) {
+        return res.status(400).json({
+          error: `Compañía inválida: '${d.company}'. Solo se permiten: ECSA, EXSA, HCSA, PCSA, MMSA`
+        });
+      }
       let [companies] = await pool.query('SELECT id FROM companies WHERE name = ?', [normalizedCompany]);
       if (companies.length > 0) {
         companyId = companies[0].id;
