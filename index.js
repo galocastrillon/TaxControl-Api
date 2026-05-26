@@ -122,7 +122,66 @@ const DEFAULT_MEMORY_HOLIDAYS = [
 ];
 
 // Inicializar desde archivo persistido (si existe) o usar defaults
-let memoryHolidays = loadFallbackFile() || DEFAULT_MEMORY_HOLIDAYS.map(h => ({ ...h }));
+// 🏢 Mapeo de variantes de empresas a nombres canónicos
+const COMPANY_ALIASES = {
+  // ECSA - Ecuacorriente SA
+  'ecsa': 'ECSA',
+  'ecuacorriente': 'ECSA',
+  'ecuacorriente sa': 'ECSA',
+  'ecuacorriente s.a.': 'ECSA',
+  'ecuacorriente s.a': 'ECSA',
+
+  // EXSA - Explorcobres SA
+  'exsa': 'EXSA',
+  'explorcobres': 'EXSA',
+  'explorcobre': 'EXSA',
+  'explorcobre sa': 'EXSA',
+  'explorcobre s.a.': 'EXSA',
+  'explorcobre s.a': 'EXSA',
+  'explorcobres sa': 'EXSA',
+  'explorcobres s.a.': 'EXSA',
+  'explorcobres s.a': 'EXSA',
+
+  // PCSA - Puertcobre SA
+  'pcsa': 'PCSA',
+  'puertcobre': 'PCSA',
+  'puertocobre': 'PCSA',
+  'puertocobre sa': 'PCSA',
+  'puertocobre s.a.': 'PCSA',
+  'puertocobre s.a': 'PCSA',
+  'puertcobre sa': 'PCSA',
+  'puertcobre s.a.': 'PCSA',
+  'puertcobre s.a': 'PCSA',
+
+  // MMSA - Minera Midas Mine SA
+  'mmsa': 'MMSA',
+  'midasmine': 'MMSA',
+  'midas mine': 'MMSA',
+  'minera midas mine': 'MMSA',
+  'minera midas mine sa': 'MMSA',
+  'minera midas mine s.a.': 'MMSA',
+  'midasmine sa': 'MMSA',
+  'midasmine s.a.': 'MMSA',
+  'midasmine s.a': 'MMSA',
+
+  // HCSA - Hidrocruz SA
+  'hcsa': 'HCSA',
+  'hidrocruz': 'HCSA',
+  'hidrocruz sa': 'HCSA',
+  'hidrocruz s.a.': 'HCSA',
+  'hidrocruz s.a': 'HCSA',
+  'proyecto hidroelectrico hidrocruz': 'HCSA',
+  'proyecto hidroelectrico hidrocruz sa': 'HCSA',
+  'proyecto hidroelectrico hidrocruz s.a.': 'HCSA'
+};
+
+// Función para normalizar nombre de empresa
+const normalizeCompanyName = (name) => {
+  if (!name) return null;
+  const normalized = name.trim().toLowerCase().replace(/\s+/g, ' ');
+  return COMPANY_ALIASES[normalized] || name.trim();
+};
+
 
 // Servir archivos estáticos de uploads con MIME types correctos
 app.use('/api/files', express.static(UPLOAD_DIR, {
@@ -1129,8 +1188,11 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
 app.post("/api/documents", requireAuth, async (req, res) => {
   const d = req.body;
 
-  if (!d.title || !d.trarniteNumber || !d.authority || !d.dueDate) {
-    return res.status(400).json({ error: "Campos requeridos: title, trarniteNumber, authority, dueDate" });
+  if (!d.title || !d.authority || !d.dueDate) {
+    return res.status(400).json({ error: "Campos requeridos: title, authority, dueDate" });
+  }
+  if (!d.documentNumber && !d.trarniteNumber) {
+    return res.status(400).json({ error: "Se requiere al menos uno: Número de Oficio (documentNumber) o Número de Trámite (trarniteNumber)" });
   }
 
   const notificationDate = d.notificationDate || new Date().toISOString().split('T')[0];
@@ -1138,22 +1200,30 @@ app.post("/api/documents", requireAuth, async (req, res) => {
   const dayType = d.dayType || 'Días hábiles';
 
   try {
-    // Verificar que trarnite_number no exista
-    const [existing] = await pool.query('SELECT id FROM documents WHERE trarnite_number = ?', [d.trarniteNumber]);
-    if (existing.length > 0) {
-      return res.status(409).json({ error: `El número de trámite '${d.trarniteNumber}' ya existe en la base de datos` });
+    // Validación de duplicados: prioridad al número de oficio (documentNumber)
+    if (d.documentNumber) {
+      const [existingByDocNum] = await pool.query('SELECT id FROM documents WHERE document_number = ?', [d.documentNumber]);
+      if (existingByDocNum.length > 0) {
+        return res.status(409).json({ error: `El número de oficio '${d.documentNumber}' ya existe en la base de datos` });
+      }
+      // Número de oficio es nuevo → aceptar sin verificar trámite
+    } else if (d.trarniteNumber) {
+      const [existing] = await pool.query('SELECT id FROM documents WHERE trarnite_number = ?', [d.trarniteNumber]);
+      if (existing.length > 0) {
+        return res.status(409).json({ error: `El número de trámite '${d.trarniteNumber}' ya existe en la base de datos` });
+      }
     }
 
     let companyId = null;
 
-    // Si se proporciona company, buscar o crear
+    // Si se proporciona company, normalizar y buscar o crear
     if (d.company) {
-      let [companies] = await pool.query('SELECT id FROM companies WHERE name = ?', [d.company]);
+      const normalizedCompany = normalizeCompanyName(d.company);
+      let [companies] = await pool.query('SELECT id FROM companies WHERE name = ?', [normalizedCompany]);
       if (companies.length > 0) {
         companyId = companies[0].id;
       } else {
-        // Crear la empresa si no existe
-        const [result] = await pool.query('INSERT INTO companies (name) VALUES (?)', [d.company]);
+        const [result] = await pool.query('INSERT INTO companies (name) VALUES (?)', [normalizedCompany]);
         companyId = result.insertId;
       }
     }
@@ -1161,12 +1231,12 @@ app.post("/api/documents", requireAuth, async (req, res) => {
     const id = d.id || `d${Date.now()}`;
     await pool.query(`
       INSERT INTO documents
-        (id, title, trarnite_number, company_id, authority, department,
+        (id, title, trarnite_number, document_number, company_id, authority, department,
          notification_date, days_limit, day_type, due_date, status,
          summary_es, summary_cn, file_name, file_url, related_doc_id, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
-      id, d.title, d.trarniteNumber, companyId, d.authority, d.department || null,
+      id, d.title, d.trarniteNumber || null, d.documentNumber || null, companyId, d.authority, d.department || null,
       notificationDate, d.daysLimit || 0, dayType, dueDate,
       d.status || "Inicializado", d.summaryEs || '', d.summaryCn || '',
       d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.user_id
@@ -1184,8 +1254,11 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
   const d = req.body;
   const id = req.params.id;
 
-  if (!d.title || !d.trarniteNumber || !d.authority || !d.dueDate) {
-    return res.status(400).json({ error: "Campos requeridos: title, trarniteNumber, authority, dueDate" });
+  if (!d.title || !d.authority || !d.dueDate) {
+    return res.status(400).json({ error: "Campos requeridos: title, authority, dueDate" });
+  }
+  if (!d.documentNumber && !d.trarniteNumber) {
+    return res.status(400).json({ error: "Se requiere al menos uno: Número de Oficio (documentNumber) o Número de Trámite (trarniteNumber)" });
   }
 
   const notificationDate = d.notificationDate || new Date().toISOString().split('T')[0];
@@ -1199,24 +1272,34 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
     }
     const oldDoc = oldDocRows[0];
 
-    // Verificar que trarnite_number no sea duplicado (a menos que sea el mismo documento)
-    if (d.trarniteNumber !== oldDoc.trarnite_number) {
-      const [existing] = await pool.query('SELECT id FROM documents WHERE trarnite_number = ?', [d.trarniteNumber]);
-      if (existing.length > 0) {
-        return res.status(409).json({ error: `El número de trámite '${d.trarniteNumber}' ya existe en otro documento` });
+    // Validación de duplicados: prioridad al número de oficio (documentNumber)
+    if (d.documentNumber) {
+      if (d.documentNumber !== oldDoc.document_number) {
+        const [existingByDocNum] = await pool.query('SELECT id FROM documents WHERE document_number = ? AND id != ?', [d.documentNumber, id]);
+        if (existingByDocNum.length > 0) {
+          return res.status(409).json({ error: `El número de oficio '${d.documentNumber}' ya existe en otro documento` });
+        }
+      }
+      // Número de oficio es nuevo o no cambió → aceptar sin verificar trámite
+    } else if (d.trarniteNumber) {
+      if (d.trarniteNumber !== oldDoc.trarnite_number) {
+        const [existing] = await pool.query('SELECT id FROM documents WHERE trarnite_number = ? AND id != ?', [d.trarniteNumber, id]);
+        if (existing.length > 0) {
+          return res.status(409).json({ error: `El número de trámite '${d.trarniteNumber}' ya existe en otro documento` });
+        }
       }
     }
 
     let companyId = null;
 
-    // Si se proporciona company, buscar o crear
+    // Si se proporciona company, normalizar y buscar o crear
     if (d.company) {
-      let [companies] = await pool.query('SELECT id FROM companies WHERE name = ?', [d.company]);
+      const normalizedCompany = normalizeCompanyName(d.company);
+      let [companies] = await pool.query('SELECT id FROM companies WHERE name = ?', [normalizedCompany]);
       if (companies.length > 0) {
         companyId = companies[0].id;
       } else {
-        // Crear la empresa si no existe
-        const [result] = await pool.query('INSERT INTO companies (name) VALUES (?)', [d.company]);
+        const [result] = await pool.query('INSERT INTO companies (name) VALUES (?)', [normalizedCompany]);
         companyId = result.insertId;
       }
     }
@@ -1224,13 +1307,13 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
     // Update the document
     const [result] = await pool.query(`
       UPDATE documents SET
-        title = ?, trarnite_number = ?, company_id = ?, authority = ?,
+        title = ?, trarnite_number = ?, document_number = ?, company_id = ?, authority = ?,
         department = ?, notification_date = ?, days_limit = ?, day_type = ?,
         due_date = ?, status = ?, summary_es = ?, summary_cn = ?,
         file_name = ?, file_url = ?, related_doc_id = ?, last_edited_by = ?, last_edited_at = NOW()
       WHERE id = ?
     `, [
-      d.title, d.trarniteNumber, companyId, d.authority,
+      d.title, d.trarniteNumber || null, d.documentNumber || null, companyId, d.authority,
       d.department || null, notificationDate, d.daysLimit || 0, dayType,
       dueDate, d.status || 'Inicializado', d.summaryEs || '', d.summaryCn || '',
       d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.user_id, id
