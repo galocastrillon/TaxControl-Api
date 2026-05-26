@@ -189,6 +189,13 @@ async function createCompany(name) {
     const [result] = await pool.query('INSERT INTO companies (name) VALUES (?)', [name]);
     if (result.insertId) return result.insertId;
   } catch (err) {
+    // Si es error de clave duplicada, buscar el id existente
+    if (err.message && err.message.includes('Duplicate entry')) {
+      const [existing] = await pool.query('SELECT id FROM companies WHERE name = ?', [name]);
+      if (existing.length > 0) {
+        return existing[0].id;
+      }
+    }
     // Si el error NO es por falta de default en id, relanzarlo
     if (!err.message || !err.message.includes("doesn't have a default value")) {
       throw err;
