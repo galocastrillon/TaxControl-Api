@@ -3066,6 +3066,15 @@ async function migrateHolidays2026() {
 }
 
 // 🔄 Migración: Poblar actividades antiguas con created_by/created_at
+async function migrateDocumentNumberColumn() {
+  try {
+    await pool.query("ALTER TABLE documents ADD COLUMN document_number VARCHAR(255) DEFAULT NULL");
+    console.log('✅ Campo document_number agregado a documents');
+  } catch (err) {
+    // Campo ya existe, ignorar
+  }
+}
+
 async function migrateActivitiesAuditTrail() {
   try {
     // Obtener primer admin para asignar a actividades antiguas
@@ -3178,5 +3187,11 @@ app.listen(PORT, async () => {
     await migrateActivitiesAuditTrail();
   } catch (err) {
     console.warn('⚠️ migrateActivitiesAuditTrail failed (non-critical):', err.message);
+  }
+
+  try {
+    await migrateDocumentNumberColumn();
+  } catch (err) {
+    console.warn('⚠️ migrateDocumentNumberColumn failed (non-critical):', err.message);
   }
 });
