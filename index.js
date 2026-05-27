@@ -3194,13 +3194,29 @@ async function migrateDocumentUniqueConstraints() {
     }
 
     // Agregar UNIQUE constraint en document_number (si no existe)
+    // Primero, eliminar cualquier índice duplicado que exista
+    try {
+      await pool.query("ALTER TABLE documents DROP INDEX IF EXISTS document_number");
+    } catch (e) {
+      // Ignorar si no existe
+    }
+
+    try {
+      await pool.query("ALTER TABLE documents DROP INDEX IF EXISTS idx_document_number");
+    } catch (e) {
+      // Ignorar si no existe
+    }
+
+    // Ahora agregar el índice correcto
     const [indexes] = await pool.query(
-      "SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_NAME = 'documents' AND INDEX_NAME = 'document_number'"
+      "SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_NAME = 'documents' AND INDEX_NAME = 'idx_document_number'"
     );
     if (indexes.length === 0) {
       // Solo agregar si no existe, pero permitir NULLs (documentNumber es opcional)
       await pool.query("ALTER TABLE documents ADD UNIQUE KEY idx_document_number (document_number)");
-      console.log('✅ UNIQUE constraint en document_number agregado');
+      console.log('✅ UNIQUE constraint en document_number agregado (limpiado de duplicados)');
+    } else {
+      console.log('✅ UNIQUE constraint en document_number ya existe');
     }
   } catch (err) {
     console.warn('⚠️ migrateDocumentUniqueConstraints: ', err.message);
