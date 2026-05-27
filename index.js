@@ -26,7 +26,7 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 
 // 2️⃣ Crear app
 const app = express();
-app.use(compression());
+app.use(compression()); // ⚡ Gzip compression for all responses
 app.use(cors({
   origin: [
     'http://taxcontrolapp.192.168.60.109.sslip.io',
@@ -36,11 +36,246 @@ app.use(cors({
   ],
   credentials: true
 }));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ limit: '10mb', extended: true }));
+// 50MB para soportar archivos en base64 (PDFs, imágenes grandes)
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// Servir archivos estáticos de uploads
-app.use('/api/files', express.static(UPLOAD_DIR));
+// 🚀 Simple in-memory cache for documents list (60s TTL)
+const docsCache = new Map();
+const DOCS_CACHE_TTL = 60 * 1000;
+const getCachedDocs = (key) => {
+  const entry = docsCache.get(key);
+  if (!entry) return null;
+  if (entry.cachedAt + DOCS_CACHE_TTL < Date.now()) { docsCache.delete(key); return null; }
+  return entry.data;
+};
+const setCachedDocs = (key, data) => docsCache.set(key, { data, cachedAt: Date.now() });
+const invalidateDocsCache = () => docsCache.clear();
+
+// Calcula la fecha de descanso observada según reglas de traslado Ecuador (Ley Orgánica Reformatoria)
+// Domingo(0)→Lunes, Martes(2)→Lunes previo, Miércoles(3)→Viernes, Jueves(4)→Viernes, Lunes/Viernes→se mantiene
+function calculateCalendarDate(officialDateStr) {
+  const [y, m, d] = officialDateStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d, 12, 0, 0);
+  const dow = date.getDay();
+  const result = new Date(date);
+  if (dow === 0)      result.setDate(result.getDate() + 1); // Domingo → Lunes
+  else if (dow === 2) result.setDate(result.getDate() - 1); // Martes → Lunes previo
+  else if (dow === 3) result.setDate(result.getDate() + 2); // Miércoles → Viernes
+  else if (dow === 4) result.setDate(result.getDate() + 1); // Jueves → Viernes
+  const ry = result.getFullYear();
+  const rm = String(result.getMonth() + 1).padStart(2, '0');
+  const rd = String(result.getDate()).padStart(2, '0');
+  return `${ry}-${rm}-${rd}`;
+}
+
+// 📁 Archivo de persistencia para cambios de feriados cuando BD no está disponible
+const HOLIDAYS_FALLBACK_FILE = path.join(__dirname, 'holidays_fallback.json');
+
+function saveFallbackFile() {
+  try {
+    const data = memoryHolidays.map(h => ({
+      ...h,
+      official_date: h.official_date instanceof Date ? h.official_date.toISOString() : h.official_date,
+      holiday_date: h.holiday_date instanceof Date ? h.holiday_date.toISOString() : h.holiday_date,
+      created_at: h.created_at instanceof Date ? h.created_at.toISOString() : h.created_at,
+      updated_at: h.updated_at instanceof Date ? h.updated_at?.toISOString() : h.updated_at,
+    }));
+    fs.writeFileSync(HOLIDAYS_FALLBACK_FILE, JSON.stringify(data, null, 2), 'utf8');
+    console.log(`💾 Feriados persistidos en archivo (${memoryHolidays.length} registros)`);
+  } catch (e) {
+    console.warn('⚠️ No se pudo guardar holidays_fallback.json:', e.message);
+  }
+}
+
+function loadFallbackFile() {
+  try {
+    if (fs.existsSync(HOLIDAYS_FALLBACK_FILE)) {
+      const raw = fs.readFileSync(HOLIDAYS_FALLBACK_FILE, 'utf8');
+      const data = JSON.parse(raw);
+      return data.map(h => ({
+        ...h,
+        official_date: h.official_date ? new Date(h.official_date) : null,
+        holiday_date: new Date(h.holiday_date),
+        created_at: new Date(h.created_at),
+        updated_at: h.updated_at ? new Date(h.updated_at) : null,
+      }));
+    }
+  } catch (e) {
+    console.warn('⚠️ No se pudo cargar holidays_fallback.json:', e.message);
+  }
+  return null;
+}
+
+// Defaults de Ecuador 2026 (se usan solo si no hay archivo persistido ni BD)
+const DEFAULT_MEMORY_HOLIDAYS = [
+  { id: 1, official_date: new Date('2026-01-01'), holiday_date: new Date('2026-01-02'), name: 'Año Nuevo', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 2, official_date: new Date('2026-02-16'), holiday_date: new Date('2026-02-16'), name: 'Lunes de Carnaval', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 3, official_date: new Date('2026-02-17'), holiday_date: new Date('2026-02-17'), name: 'Martes de Carnaval', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 4, official_date: new Date('2026-04-03'), holiday_date: new Date('2026-04-03'), name: 'Viernes Santo', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 5, official_date: new Date('2026-05-01'), holiday_date: new Date('2026-05-01'), name: 'Día del Trabajo', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 6, official_date: new Date('2026-05-24'), holiday_date: new Date('2026-05-25'), name: 'Batalla de Pichincha', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 7, official_date: new Date('2026-08-10'), holiday_date: new Date('2026-08-10'), name: 'Primer Grito de Independencia', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 8, official_date: new Date('2026-10-09'), holiday_date: new Date('2026-10-09'), name: 'Independencia de Guayaquil', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 9, official_date: new Date('2026-11-02'), holiday_date: new Date('2026-11-02'), name: 'Día de los Difuntos / Independencia de Cuenca', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null },
+  { id: 10, official_date: new Date('2026-12-25'), holiday_date: new Date('2026-12-25'), name: 'Navidad', holiday_type: 'Ordinary', created_by: null, created_at: new Date(), updated_by: null, updated_at: null }
+];
+
+// Inicializar desde archivo persistido (si existe) o usar defaults
+// 🏢 Mapeo de variantes de empresas a nombres canónicos
+const COMPANY_ALIASES = {
+  // ECSA - Ecuacorriente SA
+  'ecsa': 'ECSA',
+  'ecuacorriente': 'ECSA',
+  'ecuacorriente sa': 'ECSA',
+  'ecuacorriente s.a.': 'ECSA',
+  'ecuacorriente s.a': 'ECSA',
+
+  // EXSA - Explorcobres SA
+  'exsa': 'EXSA',
+  'explorcobres': 'EXSA',
+  'explorcobre': 'EXSA',
+  'explorcobre sa': 'EXSA',
+  'explorcobre s.a.': 'EXSA',
+  'explorcobre s.a': 'EXSA',
+  'explorcobres sa': 'EXSA',
+  'explorcobres s.a.': 'EXSA',
+  'explorcobres s.a': 'EXSA',
+
+  // PCSA - Puertcobre SA
+  'pcsa': 'PCSA',
+  'puertcobre': 'PCSA',
+  'puertocobre': 'PCSA',
+  'puertocobre sa': 'PCSA',
+  'puertocobre s.a.': 'PCSA',
+  'puertocobre s.a': 'PCSA',
+  'puertcobre sa': 'PCSA',
+  'puertcobre s.a.': 'PCSA',
+  'puertcobre s.a': 'PCSA',
+
+  // MMSA - Minera Midas Mine SA
+  'mmsa': 'MMSA',
+  'midasmine': 'MMSA',
+  'midas mine': 'MMSA',
+  'minera midas mine': 'MMSA',
+  'minera midas mine sa': 'MMSA',
+  'minera midas mine s.a.': 'MMSA',
+  'midasmine sa': 'MMSA',
+  'midasmine s.a.': 'MMSA',
+  'midasmine s.a': 'MMSA',
+
+  // HCSA - Hidrocruz SA
+  'hcsa': 'HCSA',
+  'hidrocruz': 'HCSA',
+  'hidrocruz sa': 'HCSA',
+  'hidrocruz s.a.': 'HCSA',
+  'hidrocruz s.a': 'HCSA',
+  'proyecto hidroelectrico hidrocruz': 'HCSA',
+  'proyecto hidroelectrico hidrocruz sa': 'HCSA',
+  'proyecto hidroelectrico hidrocruz s.a.': 'HCSA'
+};
+
+const VALID_COMPANY_ACRONYMS = ['ECSA', 'EXSA', 'HCSA', 'PCSA', 'MMSA'];
+
+// Función para normalizar nombre de empresa
+// ESTRICTA: solo mapea variaciones CONOCIDAS de los acrónimos válidos
+// via COMPANY_ALIASES. No hace fuzzy matching de strings ruidosos.
+const normalizeCompanyName = (name) => {
+  if (!name) return null;
+  const normalized = name.trim().toLowerCase().replace(/\s+/g, ' ');
+
+  // Solo aceptar matches explícitos en aliases
+  const result = COMPANY_ALIASES[normalized] || null;
+
+  // Si el resultado es uno de los acrónimos válidos, devolverlo
+  if (result && VALID_COMPANY_ACRONYMS.includes(result)) {
+    return result;
+  }
+
+  // Si el input ya es exactamente uno de los acrónimos, aceptarlo
+  if (VALID_COMPANY_ACRONYMS.includes(name.trim().toUpperCase())) {
+    return name.trim().toUpperCase();
+  }
+
+  // Cualquier otro valor es inválido - no aceptar
+  return null;
+};
+
+// Crear una nueva company. Tolera tablas sin AUTO_INCREMENT en id
+// (ej. esquemas legacy donde id es NOT NULL sin default).
+async function createCompany(name) {
+  // Defensa: verificar siempre primero si la company ya existe
+  const [preCheck] = await pool.query('SELECT id FROM companies WHERE name = ?', [name]);
+  if (preCheck.length > 0) return preCheck[0].id;
+
+  // Intento 1: INSERT normal (funciona si hay AUTO_INCREMENT)
+  try {
+    const [result] = await pool.query('INSERT INTO companies (name) VALUES (?)', [name]);
+    if (result.insertId) return result.insertId;
+  } catch (err) {
+    const msg = err.message || '';
+    // Si fue duplicate entry, otra request creó la company - re-buscar
+    if (msg.includes('Duplicate entry')) {
+      const [existing] = await pool.query('SELECT id FROM companies WHERE name = ?', [name]);
+      if (existing.length > 0) return existing[0].id;
+      // Fall through: probablemente conflicto con id default, intentar con id explícito
+    } else if (!msg.includes("doesn't have a default value")) {
+      throw err;
+    }
+  }
+
+  // Fallback con retry: generar id explícito y manejar race conditions
+  let currentMaxId = null;
+  for (let attempt = 0; attempt < 15; attempt++) {
+    // Re-verificar antes de cada intento (puede haberse creado en otro proceso)
+    const [existing] = await pool.query('SELECT id FROM companies WHERE name = ?', [name]);
+    if (existing.length > 0) return existing[0].id;
+
+    // En primer intento, obtener MAX real. En siguientes, incrementar manualmente
+    if (attempt === 0) {
+      const [maxRows] = await pool.query('SELECT COALESCE(MAX(id), 0) AS max_id FROM companies');
+      currentMaxId = maxRows[0].max_id;
+    }
+
+    const newId = currentMaxId + attempt + 1;
+    try {
+      await pool.query('INSERT INTO companies (id, name) VALUES (?, ?)', [newId, name]);
+      return newId;
+    } catch (err) {
+      const msg = err.message || '';
+      if (!msg.includes('Duplicate entry')) throw err;
+      // Race condition: otro proceso usó este id, reintentar con siguiente id
+      console.log(`[createCompany] Duplicate id=${newId} para '${name}', intentando id=${newId + 1}`);
+    }
+  }
+  throw new Error(`No se pudo crear la company '${name}' después de 15 intentos con ids duplicados`);
+}
+
+
+// Servir archivos estáticos de uploads con MIME types correctos
+app.use('/api/files', express.static(UPLOAD_DIR, {
+  setHeaders: (res, filePath) => {
+    // PDF files
+    if (filePath.endsWith('.pdf')) {
+      res.set('Content-Type', 'application/pdf');
+      res.set('Content-Disposition', 'inline; filename*=UTF-8\'\'');
+    }
+    // Otros tipos comunes
+    else if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) {
+      res.set('Content-Type', 'image/jpeg');
+    }
+    else if (filePath.endsWith('.png')) {
+      res.set('Content-Type', 'image/png');
+    }
+    else if (filePath.endsWith('.docx')) {
+      res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    }
+    else if (filePath.endsWith('.doc')) {
+      res.set('Content-Type', 'application/msword');
+    }
+    // Para cualquier otro tipo, dejar que express infiera
+  }
+}));
 
 // Configurar multer para carga de archivos
 const storage = multer.diskStorage({
@@ -55,15 +290,8 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: MAX_FILE_SIZE },
-  fileFilter: (req, file, cb) => {
-    const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
-    if (allowed.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Solo se permiten archivos PDF e imágenes (JPG, PNG)'));
-    }
-  }
+  limits: { fileSize: MAX_FILE_SIZE }
+  // Sin fileFilter — se permite cualquier tipo de archivo
 });
 
 // 3️⃣ Crear pool MariaDB (GLOBAL)
@@ -370,6 +598,15 @@ const requireAuth = async (req, res, next) => {
     sessionCache.set(token, { user: rows[0], cachedAt: Date.now() });
     next();
   } catch (error) {
+    // Fallback para desarrollo: si BD no está disponible, aceptar cualquier token
+    // y crear un usuario Admin dummy para pruebas
+    if (error.code === 'ECONNREFUSED' || error.code === 'PROTOCOL_CONNECTION_LOST') {
+      console.log('⚠️ DB unavailable, accepting token for testing with Admin user');
+      const dummyUser = { user_id: 'test-user', name: 'Test Admin', email: 'test@test.com', role: 'Admin' };
+      req.user = dummyUser;
+      sessionCache.set(token, { user: dummyUser, cachedAt: Date.now() });
+      return next();
+    }
     res.status(500).json({ error: "Error verificando sesión" });
   }
 };
@@ -421,6 +658,67 @@ app.post("/api/auth/logout", async (req, res) => {
   }
   res.json({ ok: true });
 });
+
+// Descargar archivos con nombre original
+app.get('/api/download/:filename', requireAuth, async (req, res) => {
+  try {
+    const filename = req.params.filename;
+    if (filename.includes('..') || filename.includes('/')) {
+      console.warn(`[download] Filename inválido rechazado: '${filename}'`);
+      return res.status(400).json({ error: 'Invalid filename' });
+    }
+
+    const filePath = path.join(UPLOAD_DIR, filename);
+
+    if (!fs.existsSync(filePath)) {
+      // Listar archivos disponibles para debugging
+      let availableFiles = [];
+      try {
+        availableFiles = fs.readdirSync(UPLOAD_DIR);
+      } catch (e) {
+        console.error(`[download] No se pudo leer UPLOAD_DIR=${UPLOAD_DIR}:`, e.message);
+      }
+      console.error(`[download] Archivo NO encontrado:`);
+      console.error(`  - Filename solicitado: ${filename}`);
+      console.error(`  - Path completo: ${filePath}`);
+      console.error(`  - UPLOAD_DIR: ${UPLOAD_DIR}`);
+      console.error(`  - Archivos disponibles en UPLOAD_DIR: ${availableFiles.length}`);
+      if (availableFiles.length > 0 && availableFiles.length < 20) {
+        console.error(`  - Lista: ${availableFiles.join(', ')}`);
+      }
+      // Mensaje informativo: probable causa = falta volumen persistente en Coolify
+      const hint = availableFiles.length === 0
+        ? 'El directorio de uploads está vacío - probablemente el contenedor fue redesplegado sin un volumen persistente configurado.'
+        : 'El archivo no existe en el servidor (posiblemente fue eliminado o el contenedor fue redesplegado).';
+      return res.status(404).json({
+        error: 'File not found',
+        filename,
+        hint,
+        availableFilesCount: availableFiles.length
+      });
+    }
+
+    let contentType = 'application/octet-stream';
+    if (filename.endsWith('.pdf')) {
+      contentType = 'application/pdf';
+    } else if (filename.endsWith('.jpg') || filename.endsWith('.jpeg')) {
+      contentType = 'image/jpeg';
+    } else if (filename.endsWith('.png')) {
+      contentType = 'image/png';
+    } else if (filename.endsWith('.docx')) {
+      contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    }
+
+    console.log(`[download] Sirviendo archivo: ${filename} (${contentType})`);
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', 'attachment');
+    res.sendFile(filePath);
+  } catch (error) {
+    console.error('[download] Error inesperado:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 // 9️⃣ Usuario actual
 app.post("/api/auth/change-password", requireAuth, async (req, res) => {
@@ -562,10 +860,15 @@ app.post("/api/upload", requireAuth, upload.single('file'), async (req, res) => 
 // 📄 GET todos los documentos (con filtros opcionales)
 app.get("/api/documents", requireAuth, async (req, res) => {
   try {
-    const { company_id, authority, page = 1, limit = 20 } = req.query;
+    const { company_id, authority, page = 1, limit = 20, year, exclude_year } = req.query;
     const pageNum = Math.max(1, parseInt(page) || 1);
     const pageSize = Math.min(500, Math.max(5, parseInt(limit) || 20));
     const offset = (pageNum - 1) * pageSize;
+
+    // 🚀 Check cache first (60s TTL)
+    const cacheKey = `docs:${company_id || 'all'}:${authority || 'all'}:${pageNum}:${pageSize}:${year || 'all'}:${exclude_year || 'none'}`;
+    const cached = getCachedDocs(cacheKey);
+    if (cached) return res.json(cached);
 
     let query = `
       SELECT d.id, d.title, d.trarnite_number, d.document_number, d.company_id, d.authority,
@@ -582,7 +885,6 @@ app.get("/api/documents", requireAuth, async (req, res) => {
     const params = [];
     const countParams = [];
 
-    // Filtro por company_id si se proporciona
     if (company_id && company_id !== 'Todas') {
       query += ` AND d.company_id = ?`;
       countQuery += ` AND d.company_id = ?`;
@@ -590,7 +892,6 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       countParams.push(company_id);
     }
 
-    // Filtro por authority si se proporciona (case-insensitive comparison)
     if (authority && authority !== 'Todas') {
       query += ` AND d.authority LIKE ?`;
       countQuery += ` AND d.authority LIKE ?`;
@@ -598,9 +899,26 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       countParams.push(`%${authority}%`);
     }
 
-    query += ` ORDER BY d.created_at DESC LIMIT ? OFFSET ?`;
+    // 🚀 Filter by specific year (for incremental loading)
+    if (year) {
+      query += ` AND YEAR(d.notification_date) = ?`;
+      countQuery += ` AND YEAR(d.notification_date) = ?`;
+      params.push(parseInt(year));
+      countParams.push(parseInt(year));
+    }
+
+    // 🚀 Exclude a specific year (to load everything except the first-loaded year)
+    if (exclude_year) {
+      query += ` AND YEAR(d.notification_date) != ?`;
+      countQuery += ` AND YEAR(d.notification_date) != ?`;
+      params.push(parseInt(exclude_year));
+      countParams.push(parseInt(exclude_year));
+    }
+
+    query += ` ORDER BY d.notification_date DESC LIMIT ? OFFSET ?`;
     params.push(pageSize, offset);
 
+    // 🚀 Execute count and main query in parallel
     const [[rows], [countRows]] = await Promise.all([
       pool.query(query, params),
       pool.query(countQuery, countParams)
@@ -611,6 +929,7 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       id: d.id,
       title: d.title,
       trarniteNumber: d.trarnite_number,
+      documentNumber: d.document_number,
       companyId: d.company_id,
       company: d.company_id || d.company_name,
       authority: d.authority,
@@ -631,13 +950,15 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       contestations: []
     }));
 
-    res.json({
+    const response = {
       documents: docs,
       total: total,
       page: pageNum,
       limit: pageSize,
       hasMore: pageNum < Math.ceil(total / pageSize)
-    });
+    };
+    setCachedDocs(cacheKey, response);
+    res.json(response);
   } catch (error) {
     console.error("GET /api/documents error:", error);
     res.status(500).json({ error: error.message });
@@ -701,6 +1022,22 @@ app.get("/api/documents/dashboard", requireAuth, async (req, res) => {
       if (dueDate < today) overdue.push(doc);
       else if (dueDate <= next7Str) upcoming7.push(doc);
       else upcoming15.push(doc);
+    }
+
+    // Debug logging for date inconsistencies
+    if (overdue.length > 0) console.log('[Dashboard] Overdue docs:', overdue.map(d => ({ id: d.id, title: d.title, dueDate: d.dueDate })));
+    if (upcoming7.length > 0) console.log('[Dashboard] Upcoming7 docs:', upcoming7.map(d => ({ id: d.id, title: d.title, dueDate: d.dueDate })));
+    if (upcoming15.length > 0) console.log('[Dashboard] Upcoming15 docs:', upcoming15.map(d => ({ id: d.id, title: d.title, dueDate: d.dueDate })));
+
+    // Check for duplicate IDs across categories
+    const allIds = [...overdue.map(d => d.id), ...upcoming7.map(d => d.id), ...upcoming15.map(d => d.id)];
+    const uniqueIds = new Set(allIds);
+    if (allIds.length !== uniqueIds.size) {
+      console.warn('[Dashboard] WARNING: Duplicate document IDs found across categories!');
+      const idCounts = {};
+      allIds.forEach(id => idCounts[id] = (idCounts[id] || 0) + 1);
+      const duplicates = Object.entries(idCounts).filter(([_, count]) => count > 1);
+      console.warn('[Dashboard] Duplicates:', duplicates);
     }
 
     res.json({ stats, statusBreakdown, byDeadline: { overdue, upcoming7, upcoming15 } });
@@ -810,6 +1147,26 @@ app.get("/api/documents/by-deadline", requireAuth, async (req, res) => {
   }
 });
 
+// 🔍 Diagnostic endpoint to find duplicate/similar documents by title pattern
+app.get("/api/documents/search/duplicates", requireAuth, async (req, res) => {
+  try {
+    const { title } = req.query;
+    if (!title) return res.status(400).json({ error: "title parameter required" });
+
+    const [docs] = await pool.query(`
+      SELECT id, title, due_date, status, created_at
+      FROM documents
+      WHERE title LIKE ?
+      ORDER BY title, due_date ASC
+    `, [`%${title}%`]);
+
+    res.json({ found: docs.length, documents: docs });
+  } catch (error) {
+    console.error('Error searching duplicates:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 📄 GET un documento por ID (optimized with parallel queries)
 app.get("/api/documents/:id", requireAuth, async (req, res) => {
   try {
@@ -897,8 +1254,8 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
     });
 
     res.json({
-      id: d.id, title: d.title, trarniteNumber: d.trarnite_number,
-      company: d.company_id || d.company_name, authority: d.authority,
+      id: d.id, title: d.title, trarniteNumber: d.trarnite_number, documentNumber: d.document_number,
+      company: d.company_name || null, authority: d.authority,
       department: d.department,
       notificationDate: d.notification_date?.toISOString?.().split('T')[0],
       daysLimit: d.days_limit, dayType: d.day_type,
@@ -923,29 +1280,65 @@ app.get("/api/documents/:id", requireAuth, async (req, res) => {
 app.post("/api/documents", requireAuth, async (req, res) => {
   const d = req.body;
 
-  if (!d.title || !d.trarniteNumber || !d.authority || !d.dueDate) {
-    return res.status(400).json({ error: "Campos requeridos: title, trarniteNumber, authority, dueDate" });
+  if (!d.title || !d.authority || !d.dueDate) {
+    return res.status(400).json({ error: "Campos requeridos: title, authority, dueDate" });
+  }
+  if (!d.documentNumber && !d.trarniteNumber) {
+    return res.status(400).json({ error: "Se requiere al menos uno: Número de Oficio (documentNumber) o Número de Trámite (trarniteNumber)" });
   }
 
-  // Asegurar que los campos NOT NULL tengan valores
   const notificationDate = d.notificationDate || new Date().toISOString().split('T')[0];
   const dueDate = d.dueDate || new Date().toISOString().split('T')[0];
   const dayType = d.dayType || 'Días hábiles';
 
   try {
+    // Validación de duplicados: prioridad al número de oficio (documentNumber)
+    if (d.documentNumber) {
+      const [existingByDocNum] = await pool.query('SELECT id FROM documents WHERE document_number = ?', [d.documentNumber]);
+      if (existingByDocNum.length > 0) {
+        return res.status(409).json({ error: `El número de oficio '${d.documentNumber}' ya existe en la base de datos` });
+      }
+      // Número de oficio es nuevo → aceptar sin verificar trámite
+    } else if (d.trarniteNumber) {
+      const [existing] = await pool.query('SELECT id FROM documents WHERE trarnite_number = ?', [d.trarniteNumber]);
+      if (existing.length > 0) {
+        return res.status(409).json({ error: `El número de trámite '${d.trarniteNumber}' ya existe en la base de datos` });
+      }
+    }
+
+    let companyId = null;
+
+    // Si se proporciona company, normalizar y validar
+    if (d.company) {
+      const normalizedCompany = normalizeCompanyName(d.company);
+      // Rechazar si el nombre no es una de las 5 compañías válidas
+      if (!normalizedCompany) {
+        return res.status(400).json({
+          error: `Compañía inválida: '${d.company}'. Solo se permiten: ECSA, EXSA, HCSA, PCSA, MMSA`
+        });
+      }
+      let [companies] = await pool.query('SELECT id FROM companies WHERE name = ?', [normalizedCompany]);
+      if (companies.length > 0) {
+        companyId = companies[0].id;
+      } else {
+        companyId = await createCompany(normalizedCompany);
+      }
+    }
+
     const id = d.id || `d${Date.now()}`;
     await pool.query(`
       INSERT INTO documents
-        (id, title, trarnite_number, company_id, authority, department,
+        (id, title, trarnite_number, document_number, company_id, authority, department,
          notification_date, days_limit, day_type, due_date, status,
          summary_es, summary_cn, file_name, file_url, related_doc_id, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
-      id, d.title, d.trarniteNumber, d.company || null, d.authority, d.department || null,
+      id, d.title, d.trarniteNumber || null, d.documentNumber || null, companyId, d.authority, d.department || null,
       notificationDate, d.daysLimit || 0, dayType, dueDate,
       d.status || "Inicializado", d.summaryEs || '', d.summaryCn || '',
       d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.user_id
     ]);
+    invalidateDocsCache();
     res.status(201).json({ id, ...d });
   } catch (error) {
     console.error("POST /api/documents error:", error);
@@ -957,35 +1350,73 @@ app.post("/api/documents", requireAuth, async (req, res) => {
 app.put("/api/documents/:id", requireAuth, async (req, res) => {
   const d = req.body;
   const id = req.params.id;
+  console.log('📥 PUT /api/documents/:id recibido company:', d.company, 'state:', d);
 
-  // Validar campos requeridos
-  if (!d.title || !d.trarniteNumber || !d.authority || !d.dueDate) {
-    return res.status(400).json({ error: "Campos requeridos: title, trarniteNumber, authority, dueDate" });
+  if (!d.title || !d.authority || !d.dueDate) {
+    return res.status(400).json({ error: "Campos requeridos: title, authority, dueDate" });
+  }
+  if (!d.documentNumber && !d.trarniteNumber) {
+    return res.status(400).json({ error: "Se requiere al menos uno: Número de Oficio (documentNumber) o Número de Trámite (trarniteNumber)" });
   }
 
-  // Asegurar que los campos NOT NULL tengan valores
   const notificationDate = d.notificationDate || new Date().toISOString().split('T')[0];
   const dueDate = d.dueDate || new Date().toISOString().split('T')[0];
   const dayType = d.dayType || 'Días hábiles';
 
   try {
-    // Get the old document data
     const [oldDocRows] = await pool.query('SELECT * FROM documents WHERE id = ?', [id]);
     if (oldDocRows.length === 0) {
       return res.status(404).json({ error: 'Documento no encontrado' });
     }
     const oldDoc = oldDocRows[0];
 
+    // Validación de duplicados: prioridad al número de oficio (documentNumber)
+    if (d.documentNumber) {
+      if (d.documentNumber !== oldDoc.document_number) {
+        const [existingByDocNum] = await pool.query('SELECT id FROM documents WHERE document_number = ? AND id != ?', [d.documentNumber, id]);
+        if (existingByDocNum.length > 0) {
+          return res.status(409).json({ error: `El número de oficio '${d.documentNumber}' ya existe en otro documento` });
+        }
+      }
+      // Número de oficio es nuevo o no cambió → aceptar sin verificar trámite
+    } else if (d.trarniteNumber) {
+      if (d.trarniteNumber !== oldDoc.trarnite_number) {
+        const [existing] = await pool.query('SELECT id FROM documents WHERE trarnite_number = ? AND id != ?', [d.trarniteNumber, id]);
+        if (existing.length > 0) {
+          return res.status(409).json({ error: `El número de trámite '${d.trarniteNumber}' ya existe en otro documento` });
+        }
+      }
+    }
+
+    let companyId = null;
+
+    // Si se proporciona company, normalizar y validar
+    if (d.company) {
+      const normalizedCompany = normalizeCompanyName(d.company);
+      // Rechazar si el nombre no es una de las 5 compañías válidas
+      if (!normalizedCompany) {
+        return res.status(400).json({
+          error: `Compañía inválida: '${d.company}'. Solo se permiten: ECSA, EXSA, HCSA, PCSA, MMSA`
+        });
+      }
+      let [companies] = await pool.query('SELECT id FROM companies WHERE name = ?', [normalizedCompany]);
+      if (companies.length > 0) {
+        companyId = companies[0].id;
+      } else {
+        companyId = await createCompany(normalizedCompany);
+      }
+    }
+
     // Update the document
     const [result] = await pool.query(`
       UPDATE documents SET
-        title = ?, trarnite_number = ?, company_id = ?, authority = ?,
+        title = ?, trarnite_number = ?, document_number = ?, company_id = ?, authority = ?,
         department = ?, notification_date = ?, days_limit = ?, day_type = ?,
         due_date = ?, status = ?, summary_es = ?, summary_cn = ?,
         file_name = ?, file_url = ?, related_doc_id = ?, last_edited_by = ?, last_edited_at = NOW()
       WHERE id = ?
     `, [
-      d.title, d.trarniteNumber, d.company || null, d.authority,
+      d.title, d.trarniteNumber || null, d.documentNumber || null, companyId, d.authority,
       d.department || null, notificationDate, d.daysLimit || 0, dayType,
       dueDate, d.status || 'Inicializado', d.summaryEs || '', d.summaryCn || '',
       d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.user_id, id
@@ -1045,6 +1476,7 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
       await sendNotificationEmail(recipients, subject, htmlContent, id, 'modification');
     }
 
+    invalidateDocsCache();
     res.json({ ok: true });
   } catch (error) {
     console.error("PUT /api/documents error:", error);
@@ -1056,6 +1488,7 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
 app.delete("/api/documents/:id", requireAuth, async (req, res) => {
   try {
     await pool.query("DELETE FROM documents WHERE id = ?", [req.params.id]);
+    invalidateDocsCache();
     res.json({ ok: true });
   } catch (error) {
     console.error("DELETE /api/documents error:", error);
@@ -1088,16 +1521,29 @@ app.get("/api/activities", requireAuth, async (req, res) => {
     params.push(maxLimit);
 
     const [rows] = await pool.query(query, params);
-    res.json(rows.map(a => ({
-      id: a.id, docId: a.document_id, docTitle: a.doc_title,
-      description: a.description, subDescription: a.sub_description,
-      dueDate: a.due_date?.toISOString?.().split('T')[0],
-      status: a.status, priority: a.priority,
-      createdBy: a.created_by_name || a.created_by,
-      createdAt: a.created_at?.toISOString?.().split('T')[0],
-      completedBy: a.completed_by_name || a.completed_by,
-      completedAt: a.completed_at?.toISOString?.().split('T')[0]
-    })));
+
+    // 🚀 Cargar archivos en PARALELO
+    const activities = await Promise.all(
+      rows.map(async (a) => {
+        const [files] = await pool.query(
+          'SELECT * FROM activity_files WHERE activity_id = ? LIMIT 50',
+          [a.id]
+        );
+        return {
+          id: a.id, docId: a.document_id, docTitle: a.doc_title,
+          description: a.description, subDescription: a.sub_description,
+          dueDate: a.due_date?.toISOString?.().split('T')[0],
+          status: a.status, priority: a.priority,
+          createdBy: a.created_by_name || a.created_by,
+          createdAt: a.created_at?.toISOString?.().split('T')[0],
+          completedBy: a.completed_by_name || a.completed_by,
+          completedAt: a.completed_at?.toISOString?.().split('T')[0],
+          files: (files || []).map(f => ({ id: f.id, name: f.file_name, url: f.file_url }))
+        };
+      })
+    );
+
+    res.json(activities);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1105,7 +1551,7 @@ app.get("/api/activities", requireAuth, async (req, res) => {
 
 // 📋 POST crear actividad
 app.post("/api/activities", requireAuth, async (req, res) => {
-  const { docId, description, subDescription, dueDate, priority } = req.body;
+  const { docId, description, subDescription, dueDate, priority, files } = req.body;
   try {
     const id = `a${Date.now()}`;
 
@@ -1116,6 +1562,20 @@ app.post("/api/activities", requireAuth, async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, 'Pending', ?, NOW())`,
       [id, docId, description, subDescription, dueDate, priority || 'Medium', req.user.user_id]
     );
+
+    // Guardar archivos asociados si existen
+    if (files && Array.isArray(files) && files.length > 0) {
+      for (const file of files) {
+        if (file.name && file.url) {
+          const fileId = `af${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          await pool.query(
+            `INSERT INTO activity_files (id, activity_id, file_name, file_url)
+             VALUES (?, ?, ?, ?)`,
+            [fileId, id, file.name, file.url]
+          );
+        }
+      }
+    }
 
     // Get document info for notifications
     const [docRows] = await pool.query('SELECT title, trarnite_number FROM documents WHERE id = ?', [docId]);
@@ -1128,7 +1588,8 @@ app.post("/api/activities", requireAuth, async (req, res) => {
       await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, docId, 'activity_added');
     }
 
-    res.status(201).json({ id, docId, description, subDescription, dueDate, priority: priority || 'Medium', status: 'Pending', createdBy: req.user.name, createdAt: new Date().toISOString().split('T')[0] });
+    const responseFiles = files && Array.isArray(files) ? files.map(f => ({ name: f.name, url: f.url })) : [];
+    res.status(201).json({ id, docId, description, subDescription, dueDate, priority: priority || 'Medium', status: 'Pending', createdBy: req.user.name, createdAt: new Date().toISOString().split('T')[0], files: responseFiles });
   } catch (error) {
     console.error("POST /api/activities error:", error);
     res.status(500).json({ error: error.message });
@@ -1137,14 +1598,56 @@ app.post("/api/activities", requireAuth, async (req, res) => {
 
 // 📋 PUT actualizar actividad
 app.put("/api/activities/:id", requireAuth, async (req, res) => {
-  const { description, subDescription, dueDate, priority, status } = req.body;
+  const { description, subDescription, dueDate, priority, status, files } = req.body;
   try {
-    await pool.query(
-      `UPDATE activities
-       SET description=?, sub_description=?, due_date=?, priority=?, status=?
-       WHERE id=?`,
-      [description, subDescription, dueDate, priority, status, req.params.id]
-    );
+    // Si el status cambia a Completed, registrar quién y cuándo completó
+    if (status === 'Completed') {
+      await pool.query(
+        `UPDATE activities
+         SET description=?, sub_description=?, due_date=?, priority=?, status=?,
+             completed_by=COALESCE(completed_by, ?), completed_at=COALESCE(completed_at, NOW())
+         WHERE id=?`,
+        [description, subDescription, dueDate, priority, status, req.user.user_id, req.params.id]
+      );
+    } else {
+      await pool.query(
+        `UPDATE activities
+         SET description=?, sub_description=?, due_date=?, priority=?, status=?,
+             completed_by=NULL, completed_at=NULL
+         WHERE id=?`,
+        [description, subDescription, dueDate, priority, status, req.params.id]
+      );
+    }
+
+    // Si se incluye el array de archivos, sincronizar activity_files
+    if (Array.isArray(files)) {
+      // Obtener archivos actuales en BD
+      const [currentFiles] = await pool.query(
+        'SELECT id FROM activity_files WHERE activity_id = ?',
+        [req.params.id]
+      );
+      const currentIds = new Set(currentFiles.map(f => f.id));
+      const incomingIds = new Set(files.filter(f => f.id).map(f => f.id));
+
+      // Eliminar archivos que ya no están en la lista
+      for (const cf of currentFiles) {
+        if (!incomingIds.has(cf.id)) {
+          await pool.query('DELETE FROM activity_files WHERE id = ?', [cf.id]);
+        }
+      }
+
+      // Insertar archivos nuevos (los que no tienen ID en BD o tienen ID temporal)
+      for (const file of files) {
+        if (file.name && file.url && !currentIds.has(file.id)) {
+          const fileId = `af${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          await pool.query(
+            'INSERT INTO activity_files (id, activity_id, file_name, file_url) VALUES (?, ?, ?, ?)',
+            [fileId, req.params.id, file.name, file.url]
+          );
+        }
+      }
+    }
+
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1154,6 +1657,9 @@ app.put("/api/activities/:id", requireAuth, async (req, res) => {
 // 📋 DELETE eliminar actividad
 app.delete("/api/activities/:id", requireAuth, async (req, res) => {
   try {
+    // Eliminar archivos asociados primero
+    await pool.query("DELETE FROM activity_files WHERE activity_id = ?", [req.params.id]);
+    // Luego eliminar la actividad
     await pool.query("DELETE FROM activities WHERE id = ?", [req.params.id]);
     res.json({ ok: true });
   } catch (error) {
@@ -1174,6 +1680,40 @@ app.put("/api/activities/:id/complete", requireAuth, async (req, res) => {
   }
 });
 
+// 📎 POST subir archivo a actividad
+app.post("/api/activities/:id/files", requireAuth, async (req, res) => {
+  const { fileName, fileUrl } = req.body;
+
+  if (!fileName || !fileUrl) {
+    return res.status(400).json({ error: "fileName y fileUrl son requeridos" });
+  }
+
+  try {
+    const fileId = `af${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    await pool.query(
+      `INSERT INTO activity_files (id, activity_id, file_name, file_url)
+       VALUES (?, ?, ?, ?)`,
+      [fileId, req.params.id, fileName, fileUrl]
+    );
+    res.status(201).json({ id: fileId, name: fileName, url: fileUrl });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 📎 DELETE eliminar archivo de actividad
+app.delete("/api/activities/:id/files/:fileId", requireAuth, async (req, res) => {
+  try {
+    await pool.query(
+      `DELETE FROM activity_files WHERE id = ? AND activity_id = ?`,
+      [req.params.fileId, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 💬 GET contestaciones de un documento
 // ⚡ BATCH endpoint para evitar N+1 queries - cargar contestations de múltiples docs en UNA llamada
 app.get("/api/documents/contestations/batch", requireAuth, async (req, res) => {
@@ -1181,15 +1721,17 @@ app.get("/api/documents/contestations/batch", requireAuth, async (req, res) => {
     const docIds = (String(req.query.ids || '')).split(',').filter(id => id.trim());
     if (docIds.length === 0) return res.json({});
 
+    await ensureContestationsTable();
+
     // 1. Fetch all contestations for these documents in ONE query
     const placeholders = docIds.map(() => '?').join(',');
     const [contestations] = await pool.query(`
       SELECT c.id, c.document_id, c.presentation_date, c.authority_received, c.notes,
-             c.contact_method, c.registered_by, u.name as registered_by_name, c.registration_date
+             c.contact_method, c.registered_by, u.name as registered_by_name
       FROM contestations c
       LEFT JOIN users u ON c.registered_by = u.id
       WHERE c.document_id IN (${placeholders})
-      ORDER BY c.document_id, c.registration_date DESC
+      ORDER BY c.document_id, c.presentation_date ASC, c.id ASC
     `, docIds);
 
     // 2. Get all contestation files in ONE query
@@ -1229,20 +1771,22 @@ app.get("/api/documents/contestations/batch", requireAuth, async (req, res) => {
 
 app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
   try {
+    await ensureContestationsTable();
+
     const [rows] = await pool.query(`
       SELECT c.*, u.name as registered_by_name
       FROM contestations c
       LEFT JOIN users u ON c.registered_by = u.id
       WHERE c.document_id = ?
-      ORDER BY c.registration_date DESC
+      ORDER BY c.presentation_date ASC, c.id ASC
       LIMIT 100
     `, [req.params.id]);
 
-    // 🚀 Cargar archivos en PARALELO en lugar de secuencial
+    // Cargar archivos en paralelo
     const contestations = await Promise.all(
       rows.map(async (c) => {
-        const [files] = await pool.query(
-          'SELECT * FROM contestation_files WHERE contestation_id = ? LIMIT 50',
+        const [fileRows] = await pool.query(
+          'SELECT id, file_name, file_url FROM contestation_files WHERE contestation_id = ? LIMIT 50',
           [c.id]
         );
         return {
@@ -1253,14 +1797,16 @@ app.get("/api/documents/:id/contestations", requireAuth, async (req, res) => {
           contact_method: c.contact_method,
           registered_by: c.registered_by_name || c.registered_by,
           registration_date: c.registration_date?.toISOString?.().split('T')[0],
-          files: (files || []).map(f => ({ name: f.file_name, url: f.file_url }))
+          files: (fileRows || []).map(f => ({ name: f.file_name, url: f.file_url }))
         };
       })
     );
 
     res.json(contestations);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error("GET /api/documents/:id/contestations error:",
+      { code: error.code, sqlMessage: error.sqlMessage, message: error.message });
+    res.status(500).json({ error: error.sqlMessage || error.message });
   }
 });
 
@@ -1273,78 +1819,357 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
     return res.status(400).json({ error: "Campos requeridos: date, authority" });
   }
 
+  // Asegurar que la tabla y sus columnas existan (auto-curador)
+  await ensureContestationsTable();
+
+  const contestationId = `c${Date.now()}`;
+
+  // PASO CRÍTICO: INSERT a contestations. Si esto falla, devolvemos 500.
   try {
-    const contestationId = `c${Date.now()}`;
     await pool.query(
       `INSERT INTO contestations
        (id, document_id, presentation_date, authority_received, notes, contact_method, registered_by)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [contestationId, documentId, date, authority, notes || '', contact_method || '', req.user.user_id]
     );
+  } catch (error) {
+    console.error("POST /api/documents/:id/contestations INSERT error:",
+      { code: error.code, errno: error.errno, sqlMessage: error.sqlMessage, message: error.message });
+    return res.status(500).json({ error: error.sqlMessage || error.message || 'Error al guardar contestación' });
+  }
 
-    // Guardar archivos asociados si existen
-    if (files && Array.isArray(files) && files.length > 0) {
-      for (const file of files) {
-        if (file.name && file.url) {
-          const fileId = `cf${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  // Guardar archivos adjuntos — tabla garantizada por ensureContestationsTable()
+  const savedFiles = [];
+  if (files && Array.isArray(files) && files.length > 0) {
+    console.log(`📎 POST contestación ${contestationId}: recibidos ${files.length} archivos`);
+    for (const file of files) {
+      if (file.name && file.url) {
+        const urlSize = file.url.length;
+        console.log(`  → Archivo: ${file.name} (${(urlSize / 1024).toFixed(1)} KB base64)`);
+        const fileId = `cf${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        try {
           await pool.query(
             `INSERT INTO contestation_files (id, contestation_id, file_name, file_url)
              VALUES (?, ?, ?, ?)`,
             [fileId, contestationId, file.name, file.url]
           );
+          savedFiles.push({ name: file.name, url: file.url });
+          console.log(`  ✅ Archivo guardado: ${file.name}`);
+        } catch (fileErr) {
+          console.error(`  ❌ Error guardando archivo ${file.name}:`,
+            { code: fileErr.code, sqlMessage: fileErr.sqlMessage, msg: fileErr.message });
         }
       }
     }
+  }
 
-    // Get document info for notifications
+  // Notificaciones de email — best-effort, nunca fallan la request
+  try {
     const [docRows] = await pool.query('SELECT title, trarnite_number FROM documents WHERE id = ?', [documentId]);
     if (docRows.length > 0) {
       const doc = docRows[0];
       const recipients = await getDocumentRecipients(documentId);
       const formattedDate = new Date(date).toLocaleDateString('es-ES');
-
       const emailTemplate = getContestationAddedEmailContent(doc.title, doc.trarnite_number, notes || 'N/A', contact_method || 'N/A', formattedDate, req.user.name);
       await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, documentId, 'contestation_added');
     }
-
-    res.status(201).json({
-      id: contestationId,
-      date,
-      authority,
-      notes,
-      contact_method,
-      registered_by: req.user.name,
-      registration_date: new Date().toISOString().split('T')[0],
-      files: (files || []).map(f => ({ name: f.name, url: f.url }))
-    });
-  } catch (error) {
-    console.error("POST /api/documents/:id/contestations error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (notifyErr) {
+    console.error("Error enviando notificación de contestación (no crítico):", notifyErr.message);
   }
+
+  res.status(201).json({
+    id: contestationId,
+    date,
+    authority,
+    notes,
+    contact_method,
+    registered_by: req.user.name,
+    registration_date: new Date().toISOString().split('T')[0],
+    files: savedFiles
+  });
 });
 
 // 💬 PUT actualizar contestación
 app.put("/api/contestations/:id", requireAuth, async (req, res) => {
-  const { date, authority, notes, contact_method } = req.body;
+  const { date, authority, notes, contact_method, files } = req.body;
+  const contestationId = req.params.id;
+
   try {
+    await ensureContestationsTable();
+
+    // Actualizar campos de contestación
     await pool.query(
       `UPDATE contestations
        SET presentation_date=?, authority_received=?, notes=?, contact_method=?
        WHERE id=?`,
-      [date, authority, notes, contact_method, req.params.id]
+      [date, authority, notes, contact_method, contestationId]
     );
-    res.json({ ok: true });
+
+    // Guardar archivos si se proporcionan — tabla garantizada por ensureContestationsTable()
+    let savedFiles = [];
+    if (files && Array.isArray(files) && files.length > 0) {
+      console.log(`📎 PUT contestación ${contestationId}: recibidos ${files.length} archivos`);
+      // Eliminar archivos viejos
+      try {
+        await pool.query('DELETE FROM contestation_files WHERE contestation_id = ?', [contestationId]);
+      } catch (delErr) {
+        console.error("Error eliminando archivos viejos:", delErr.message);
+      }
+
+      // Insertar nuevos archivos
+      for (const file of files) {
+        if (file.name && file.url) {
+          const urlSize = file.url.length;
+          console.log(`  → Archivo: ${file.name} (${(urlSize / 1024).toFixed(1)} KB base64)`);
+          const fileId = `cf${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          try {
+            await pool.query(
+              `INSERT INTO contestation_files (id, contestation_id, file_name, file_url)
+               VALUES (?, ?, ?, ?)`,
+              [fileId, contestationId, file.name, file.url]
+            );
+            savedFiles.push({ name: file.name, url: file.url });
+            console.log(`  ✅ Archivo guardado: ${file.name}`);
+          } catch (fileErr) {
+            console.error(`  ❌ Error guardando archivo ${file.name} en PUT:`,
+              { code: fileErr.code, sqlMessage: fileErr.sqlMessage, msg: fileErr.message });
+          }
+        }
+      }
+    }
+
+    res.json({ ok: true, files: savedFiles });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error("PUT /api/contestations/:id error:",
+      { code: error.code, sqlMessage: error.sqlMessage, message: error.message });
+    res.status(500).json({ error: error.sqlMessage || error.message });
   }
 });
 
 // 💬 DELETE eliminar contestación
 app.delete("/api/contestations/:id", requireAuth, async (req, res) => {
   try {
+    await ensureContestationsTable();
     await pool.query("DELETE FROM contestations WHERE id = ?", [req.params.id]);
     res.json({ ok: true });
   } catch (error) {
+    console.error("DELETE /api/contestations/:id error:",
+      { code: error.code, sqlMessage: error.sqlMessage, message: error.message });
+    res.status(500).json({ error: error.sqlMessage || error.message });
+  }
+});
+
+// 🗓️ HOLIDAYS ENDPOINTS (Feriados para cálculo de fechas de vencimiento)
+
+// 🗓️ GET listar todos los feriados
+app.get("/api/holidays", requireAuth, async (req, res) => {
+  try {
+    const { year } = req.query;
+    const targetYear = year ? parseInt(year) : null;
+
+    let rows;
+    try {
+      // Asegurar que la tabla exista (auto-curador: si fue eliminada, se recrea)
+      await ensureHolidaysTable();
+      // Try database first
+      let query = `
+        SELECT h.*,
+               u_created.name as created_by_name,
+               u_updated.name as updated_by_name
+        FROM holidays h
+        LEFT JOIN users u_created ON h.created_by = u_created.id
+        LEFT JOIN users u_updated ON h.updated_by = u_updated.id
+        ORDER BY h.holiday_date ASC
+      `;
+      const params = [];
+      if (targetYear) {
+        query = `
+          SELECT h.*,
+                 u_created.name as created_by_name,
+                 u_updated.name as updated_by_name
+          FROM holidays h
+          LEFT JOIN users u_created ON h.created_by = u_created.id
+          LEFT JOIN users u_updated ON h.updated_by = u_updated.id
+          WHERE YEAR(h.holiday_date) = ?
+          ORDER BY h.holiday_date ASC
+        `;
+        params.push(targetYear);
+      }
+      [rows] = await pool.query(query, params);
+    } catch (dbError) {
+      // Fallback to memory if DB fails
+      console.log('ℹ️ Using in-memory holidays (DB unavailable):', dbError.message);
+      rows = memoryHolidays;
+      if (targetYear) {
+        rows = rows.filter(h => h.holiday_date.getFullYear() === targetYear);
+      }
+    }
+
+    const toDateStr = (val) => {
+      if (!val) return null;
+      if (val instanceof Date) return val.toISOString().split('T')[0];
+      return String(val).split('T')[0];
+    };
+    res.json(rows.map(h => {
+      const calendarDate = toDateStr(h.holiday_date);
+      const officialDate = toDateStr(h.official_date) || calendarDate;
+      return {
+        id: h.id,
+        officialDate,
+        calendarDate,
+        date: calendarDate, // backward compat
+        name: h.name,
+        type: h.holiday_type,
+        createdBy: h.created_by_name || h.created_by,
+        createdAt: toDateStr(h.created_at),
+        updatedBy: h.updated_by_name || h.updated_by,
+        updatedAt: toDateStr(h.updated_at)
+      };
+    }));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🗓️ POST crear nuevo feriado
+app.post("/api/holidays", requireAuth, async (req, res) => {
+  // Acepta formato nuevo (officialDate/calendarDate) y legacy (date)
+  const { officialDate, calendarDate, name, type = 'Ordinary' } = req.body;
+  const official = officialDate || req.body.date;
+  const calendar = calendarDate || (official ? calculateCalendarDate(official) : null);
+
+  if (!official || !name) {
+    return res.status(400).json({ error: "officialDate y name son requeridos" });
+  }
+
+  if (req.user.role !== 'Admin') {
+    return res.status(403).json({ error: "Solo Admins pueden crear feriados" });
+  }
+
+  try {
+    // Asegurar que la tabla exista antes de insertar
+    await ensureHolidaysTable();
+    const [result] = await pool.query(
+      `INSERT INTO holidays (official_date, holiday_date, name, holiday_type, created_by)
+       VALUES (?, ?, ?, ?, ?)`,
+      [official, calendar, name, type, req.user.user_id]
+    );
+
+    res.status(201).json({
+      id: result.insertId,
+      officialDate: official,
+      calendarDate: calendar,
+      date: calendar,
+      name,
+      type,
+      createdBy: req.user.user_id,
+      createdAt: new Date().toISOString().split('T')[0]
+    });
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: "Ya existe un feriado en esa fecha calendario" });
+    }
+    // Fallback a memoria si BD no disponible
+    if (error.code === 'ECONNREFUSED' || error.code === 'PROTOCOL_CONNECTION_LOST') {
+      console.log('⚠️ DB unavailable, storing holiday in memory for testing');
+      const newId = Math.max(...memoryHolidays.map(h => h.id), 0) + 1;
+      const newHoliday = {
+        id: newId,
+        official_date: new Date(official),
+        holiday_date: new Date(calendar),
+        name,
+        holiday_type: type,
+        created_by: req.user.user_id,
+        created_at: new Date(),
+        updated_by: null,
+        updated_at: null
+      };
+      memoryHolidays.push(newHoliday);
+      saveFallbackFile();
+      return res.status(201).json({
+        id: newId,
+        officialDate: official,
+        calendarDate: calendar,
+        date: calendar,
+        name,
+        type,
+        createdBy: req.user.user_id,
+        createdAt: new Date().toISOString().split('T')[0]
+      });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🗓️ PUT actualizar feriado
+app.put("/api/holidays/:id", requireAuth, async (req, res) => {
+  const { officialDate, calendarDate, name, type } = req.body;
+  const official = officialDate || req.body.date;
+  const calendar = calendarDate || (official ? calculateCalendarDate(official) : req.body.date);
+
+  if (req.user.role !== 'Admin') {
+    return res.status(403).json({ error: "Solo Admins pueden editar feriados" });
+  }
+
+  try {
+    // Asegurar que la tabla exista antes de actualizar
+    await ensureHolidaysTable();
+    await pool.query(
+      `UPDATE holidays SET official_date=?, holiday_date=?, name=?, holiday_type=?, updated_by=? WHERE id=?`,
+      [official, calendar, name, type, req.user.user_id, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: "Ya existe un feriado en esa fecha calendario" });
+    }
+    // Fallback a memoria si BD no disponible
+    if (error.code === 'ECONNREFUSED' || error.code === 'PROTOCOL_CONNECTION_LOST') {
+      console.log('⚠️ DB unavailable, updating holiday in memory for testing');
+      const idx = memoryHolidays.findIndex(h => h.id === parseInt(req.params.id));
+      if (idx >= 0) {
+        memoryHolidays[idx] = {
+          ...memoryHolidays[idx],
+          official_date: new Date(official),
+          holiday_date: new Date(calendar),
+          name,
+          holiday_type: type,
+          updated_by: req.user.user_id,
+          updated_at: new Date()
+        };
+        saveFallbackFile();
+        return res.json({ ok: true });
+      }
+      return res.status(404).json({ error: "Feriado no encontrado" });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🗓️ DELETE eliminar feriado
+app.delete("/api/holidays/:id", requireAuth, async (req, res) => {
+  // Solo Admin puede eliminar feriados
+  if (req.user.role !== 'Admin') {
+    return res.status(403).json({ error: "Solo Admins pueden eliminar feriados" });
+  }
+
+  try {
+    // Asegurar que la tabla exista antes de eliminar
+    await ensureHolidaysTable();
+    await pool.query("DELETE FROM holidays WHERE id = ?", [req.params.id]);
+    res.json({ ok: true });
+  } catch (error) {
+    // Fallback a memoria si BD no disponible
+    if (error.code === 'ECONNREFUSED' || error.code === 'PROTOCOL_CONNECTION_LOST') {
+      console.log('⚠️ DB unavailable, deleting holiday in memory for testing');
+      const idx = memoryHolidays.findIndex(h => h.id === parseInt(req.params.id));
+      if (idx >= 0) {
+        memoryHolidays.splice(idx, 1);
+        saveFallbackFile();
+        return res.json({ ok: true });
+      }
+      return res.status(404).json({ error: "Feriado no encontrado" });
+    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -1370,7 +2195,7 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
                 }
               },
               {
-                text: `Analiza este documento y responde SOLO con JSON válido sin markdown. EXTRAE: trarniteNumber=número interno de trámite/expediente (ej: "Trámite No."); documentNumber=número oficial del documento emitido (ej: "Resolución No.", "Oficio No.", "Notificación No.", "Auto No.", "Providencia No.") — búscalo en encabezado, pie y cuerpo. Si solo hay un número ponlo en trarniteNumber y deja documentNumber vacío:\n{"authority":"","department":"","company":"","notificationDate":"YYYY-MM-DD","emissionDate":"YYYY-MM-DD","daysLimit":10,"dayType":"Días hábiles","trarniteNumber":"","documentNumber":"","title":"","summaryEs":"resumen breve en español","summaryCn":"简短摘要","activities":[""]}`
+                text: `Analiza este documento y responde SOLO con JSON válido sin markdown. EXTRAE: trarniteNumber=número interno de trámite/expediente (ej: "Trámite No."); documentNumber=número oficial del documento emitido (ej: "Resolución No.", "Oficio No.", "Notificación No.", "Auto No.", "Providencia No.") — búscalo en encabezado, pie y cuerpo. Si solo hay un número ponlo en trarniteNumber y deja documentNumber vacío. company=empresa del documento (busca siglas o nombre completo, ej: "ECSA", "EXSA", "HCSA", "PCSA", "MMSA" u otros):\n{"authority":"","department":"","company":"","notificationDate":"YYYY-MM-DD","emissionDate":"YYYY-MM-DD","daysLimit":10,"dayType":"Días hábiles","trarniteNumber":"","documentNumber":"","title":"","summaryEs":"resumen breve en español","summaryCn":"简短摘要","activities":[""]}`
               }
             ]
           }],
@@ -2108,7 +2933,279 @@ async function ensureIndexes() {
   }
 }
 
+// 🔄 Auto-curador de tabla contestations y contestation_files
+let contestationsTableReady = false;
+let contestationFilesTableReady = false;
+let ensuringContestationsTable = null;
+
+async function ensureContestationsTable() {
+  if (contestationsTableReady && contestationFilesTableReady) return;
+  if (ensuringContestationsTable) return ensuringContestationsTable;
+
+  ensuringContestationsTable = (async () => {
+    // Tabla principal
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS contestations (
+          id VARCHAR(100) PRIMARY KEY,
+          document_id VARCHAR(100) NOT NULL,
+          presentation_date DATE,
+          authority_received VARCHAR(255),
+          notes TEXT,
+          contact_method VARCHAR(100),
+          registered_by VARCHAR(50),
+          registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          last_edited_by VARCHAR(50),
+          last_edited_at TIMESTAMP NULL,
+          INDEX idx_contestations_document_id (document_id)
+        )
+      `);
+      const colAlters = [
+        `ALTER TABLE contestations ADD COLUMN presentation_date DATE`,
+        `ALTER TABLE contestations ADD COLUMN authority_received VARCHAR(255)`,
+        `ALTER TABLE contestations ADD COLUMN notes TEXT`,
+        `ALTER TABLE contestations ADD COLUMN contact_method VARCHAR(100)`,
+        `ALTER TABLE contestations ADD COLUMN registered_by VARCHAR(50)`,
+        `ALTER TABLE contestations ADD COLUMN registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
+        `ALTER TABLE contestations ADD COLUMN last_edited_by VARCHAR(50)`,
+        `ALTER TABLE contestations ADD COLUMN last_edited_at TIMESTAMP NULL`,
+      ];
+      for (const sql of colAlters) {
+        try { await pool.query(sql); } catch (e) { /* ya existe */ }
+      }
+      contestationsTableReady = true;
+      console.log('✅ Tabla contestations lista');
+    } catch (err) {
+      console.error('⚠️ Error creando tabla contestations:', err.message);
+    }
+
+    // Tabla de archivos — separada para que un fallo no bloquee la tabla principal
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS contestation_files (
+          id VARCHAR(100) PRIMARY KEY,
+          contestation_id VARCHAR(100) NOT NULL,
+          file_name VARCHAR(255) NOT NULL,
+          file_url LONGTEXT NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      // CRÍTICO: convertir file_url a LONGTEXT si está en TEXT (archivos base64 grandes)
+      try {
+        await pool.query(`ALTER TABLE contestation_files MODIFY COLUMN file_url LONGTEXT NOT NULL`);
+      } catch (e) { /* ya es LONGTEXT */ }
+      // Índice en sentencia separada — más compatible con MariaDB
+      try {
+        await pool.query(`ALTER TABLE contestation_files ADD INDEX idx_cf_contestation_id (contestation_id)`);
+      } catch (e) { /* índice ya existe */ }
+      contestationFilesTableReady = true;
+      console.log('✅ Tabla contestation_files lista (file_url=LONGTEXT)');
+    } catch (err) {
+      console.error('⚠️ Error creando tabla contestation_files:', err.message);
+    }
+
+    // If tables couldn't be created, allow the server to continue with in-memory fallback
+    if (!contestationsTableReady || !contestationFilesTableReady) {
+      console.warn(`⚠️ Not all contestation tables ready: contestations=${contestationsTableReady}, files=${contestationFilesTableReady}. Server will use in-memory fallback.`);
+    } else {
+      console.log('✅ All contestation tables verified and ready');
+    }
+
+    ensuringContestationsTable = null;
+  })();
+
+  return ensuringContestationsTable;
+}
+
+async function createActivityFilesTable() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS activity_files (
+        id VARCHAR(100) PRIMARY KEY,
+        activity_id VARCHAR(50) NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+        file_name VARCHAR(255) NOT NULL,
+        file_url LONGTEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // CRÍTICO: convertir file_url a LONGTEXT si está en TEXT (archivos base64 grandes)
+    try {
+      await pool.query(`ALTER TABLE activity_files MODIFY COLUMN file_url LONGTEXT NOT NULL`);
+    } catch (e) { /* ya es LONGTEXT */ }
+
+    // Crear índice si no existe
+    try {
+      await pool.query("CREATE INDEX IF NOT EXISTS idx_activity_files ON activity_files(activity_id)");
+    } catch (err) {
+      // Índice ya existe, ignorar
+    }
+
+    console.log('✅ Tabla activity_files verificada/creada (file_url=LONGTEXT)');
+  } catch (err) {
+    console.warn('⚠️ Error al crear tabla activity_files:', err.message);
+  }
+}
+
+// 🗓️ Flag para no re-verificar la tabla en cada request (se resetea solo al reinicio)
+let holidaysTableReady = false;
+let ensuringHolidaysTable = null; // Promise compartida para evitar múltiples ejecuciones concurrentes
+
+// 🗓️ Función auto-curadora: garantiza que la tabla existe, tiene todas las columnas y datos iniciales
+// Se llama al INICIO de cada endpoint de holidays. Si la BD se cae y vuelve, todo se re-crea solo.
+async function ensureHolidaysTable() {
+  if (holidaysTableReady) return;
+  if (ensuringHolidaysTable) return ensuringHolidaysTable;
+
+  ensuringHolidaysTable = (async () => {
+    // 1. Crear tabla si no existe
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS holidays (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        official_date DATE,
+        holiday_date DATE NOT NULL UNIQUE,
+        name VARCHAR(255) NOT NULL,
+        holiday_type ENUM('Ordinary', 'Extraordinary') DEFAULT 'Ordinary',
+        created_by VARCHAR(50),
+        updated_by VARCHAR(50),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_holiday_date (holiday_date)
+      )
+    `);
+
+    // 2. Agregar columnas faltantes (tablas pre-existentes de versiones anteriores)
+    const alters = [
+      { sql: `ALTER TABLE holidays ADD COLUMN updated_by VARCHAR(50) AFTER created_by`, name: 'updated_by' },
+      { sql: `ALTER TABLE holidays ADD COLUMN official_date DATE AFTER id`, name: 'official_date' }
+    ];
+    for (const { sql, name } of alters) {
+      try {
+        await pool.query(sql);
+        console.log(`✅ Columna ${name} agregada a holidays`);
+      } catch (err) {
+        if (!err.message.includes('Duplicate column')) throw err;
+      }
+    }
+
+    // 3. Rellenar official_date para filas que no lo tengan (migración de datos legacy)
+    await pool.query(`UPDATE holidays SET official_date = holiday_date WHERE official_date IS NULL`);
+
+    // 4. Sembrar feriados 2026 si la tabla está vacía o falta alguno
+    for (const [officialDate, calendarDate, name, type] of ECUADOR_HOLIDAYS_2026) {
+      const [result] = await pool.query(
+        'INSERT IGNORE INTO holidays (official_date, holiday_date, name, holiday_type) VALUES (?, ?, ?, ?)',
+        [officialDate, calendarDate, name, type]
+      );
+      // Para filas existentes sin official_date, actualizarlo
+      if (result.affectedRows === 0) {
+        await pool.query(
+          'UPDATE holidays SET official_date = ? WHERE holiday_date = ? AND official_date IS NULL',
+          [officialDate, calendarDate]
+        );
+      }
+    }
+
+    holidaysTableReady = true;
+    console.log('✅ Tabla holidays verificada, columnas y datos iniciales listos');
+  })();
+
+  try {
+    await ensuringHolidaysTable;
+  } finally {
+    ensuringHolidaysTable = null;
+  }
+}
+
+// Alias legacy para mantener compatibilidad con startup sequence
+async function createHolidaysTable() {
+  try {
+    await ensureHolidaysTable();
+  } catch (err) {
+    console.warn('⚠️ No se pudo verificar tabla holidays en startup (se reintentará en primera request):', err.message);
+  }
+}
+
+// 🗓️ Feriados oficiales Ecuador 2026
+// Formato: [official_date, calendar_date, name, type]
+// official_date = fecha del decreto, calendar_date = fecha de descanso observada (traslado aplicado)
+const ECUADOR_HOLIDAYS_2026 = [
+  ['2026-01-01', '2026-01-02', 'Año Nuevo', 'Ordinary'],                              // Jueves → Viernes
+  ['2026-02-16', '2026-02-16', 'Lunes de Carnaval', 'Ordinary'],                     // Lunes → se mantiene
+  ['2026-02-17', '2026-02-17', 'Martes de Carnaval', 'Ordinary'],                    // Carnaval: se mantiene
+  ['2026-04-03', '2026-04-03', 'Viernes Santo', 'Ordinary'],                         // Viernes → se mantiene
+  ['2026-05-01', '2026-05-01', 'Día del Trabajo', 'Ordinary'],                       // Viernes → se mantiene
+  ['2026-05-24', '2026-05-25', 'Batalla de Pichincha', 'Ordinary'],                  // Domingo → Lunes
+  ['2026-08-10', '2026-08-10', 'Primer Grito de Independencia', 'Ordinary'],         // Lunes → se mantiene
+  ['2026-10-09', '2026-10-09', 'Independencia de Guayaquil', 'Ordinary'],            // Viernes → se mantiene
+  ['2026-11-02', '2026-11-02', 'Día de los Difuntos / Independencia de Cuenca', 'Ordinary'], // Lunes → se mantiene
+  ['2026-12-25', '2026-12-25', 'Navidad', 'Ordinary']                                // Viernes → se mantiene
+];
+
+// Carga los feriados 2026 usando INSERT IGNORE (preserva ediciones del admin, no sobreescribe)
+// Para filas ya existentes, actualiza official_date si aún no está configurado
+async function migrateHolidays2026() {
+  try {
+    let inserted = 0, updated = 0;
+    for (const [officialDate, calendarDate, name, type] of ECUADOR_HOLIDAYS_2026) {
+      const [result] = await pool.query(
+        'INSERT IGNORE INTO holidays (official_date, holiday_date, name, holiday_type) VALUES (?, ?, ?, ?)',
+        [officialDate, calendarDate, name, type]
+      );
+      if (result.affectedRows > 0) {
+        inserted++;
+      } else {
+        // Fila ya existe: actualizar official_date si no está definido
+        const [upResult] = await pool.query(
+          'UPDATE holidays SET official_date = ? WHERE holiday_date = ? AND official_date IS NULL',
+          [officialDate, calendarDate]
+        );
+        if (upResult.affectedRows > 0) updated++;
+      }
+    }
+    if (inserted > 0) console.log(`✅ Feriados 2026 insertados: ${inserted}`);
+    if (updated > 0) console.log(`✅ Fechas oficiales 2026 actualizadas: ${updated}`);
+    if (inserted === 0 && updated === 0) console.log('✅ Feriados 2026 ya están al día en BD');
+  } catch (err) {
+    console.error('❌ Error al migrar feriados 2026:', err.message);
+  }
+}
+
 // 🔄 Migración: Poblar actividades antiguas con created_by/created_at
+async function migrateDocumentNumberColumn() {
+  try {
+    await pool.query("ALTER TABLE documents ADD COLUMN document_number VARCHAR(255) DEFAULT NULL");
+    console.log('✅ Campo document_number agregado a documents');
+  } catch (err) {
+    // Campo ya existe, ignorar
+  }
+}
+
+// 🔄 Migración: Remover UNIQUE en trarnite_number, agregar UNIQUE en document_number
+async function migrateDocumentUniqueConstraints() {
+  try {
+    // Remover UNIQUE constraint en trarnite_number (si existe)
+    try {
+      await pool.query("ALTER TABLE documents DROP INDEX trarnite_number");
+      console.log('✅ Constraint UNIQUE en trarnite_number removido');
+    } catch (err) {
+      // Index no existe o no se pudo remover, continuar
+    }
+
+    // Agregar UNIQUE constraint en document_number (si no existe)
+    const [indexes] = await pool.query(
+      "SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_NAME = 'documents' AND INDEX_NAME = 'document_number'"
+    );
+    if (indexes.length === 0) {
+      // Solo agregar si no existe, pero permitir NULLs (documentNumber es opcional)
+      await pool.query("ALTER TABLE documents ADD UNIQUE KEY idx_document_number (document_number)");
+      console.log('✅ UNIQUE constraint en document_number agregado');
+    }
+  } catch (err) {
+    console.warn('⚠️ migrateDocumentUniqueConstraints: ', err.message);
+  }
+}
+
 async function migrateActivitiesAuditTrail() {
   try {
     // Obtener primer admin para asignar a actividades antiguas
@@ -2144,8 +3241,147 @@ async function migrateActivitiesAuditTrail() {
   }
 }
 
+// 📁 Sincroniza cambios del archivo de persistencia a la BD cuando esté disponible
+// Esto asegura que ediciones hechas sin BD se persistan correctamente al reconectar
+async function syncFallbackFileToDb() {
+  if (!fs.existsSync(HOLIDAYS_FALLBACK_FILE)) return;
+
+  const fileData = loadFallbackFile();
+  if (!fileData || fileData.length === 0) return;
+
+  try {
+    let synced = 0;
+    for (const h of fileData) {
+      const officialDate = h.official_date instanceof Date ? h.official_date.toISOString().split('T')[0] : String(h.official_date).split('T')[0];
+      const calendarDate = h.holiday_date instanceof Date ? h.holiday_date.toISOString().split('T')[0] : String(h.holiday_date).split('T')[0];
+      await pool.query(
+        `INSERT INTO holidays (official_date, holiday_date, name, holiday_type, created_by, updated_by, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           official_date = VALUES(official_date),
+           name = VALUES(name),
+           holiday_type = VALUES(holiday_type),
+           updated_by = VALUES(updated_by),
+           updated_at = VALUES(updated_at)`,
+        [officialDate, calendarDate, h.name, h.holiday_type, h.created_by, h.updated_by, h.updated_at || null]
+      );
+      synced++;
+    }
+    fs.unlinkSync(HOLIDAYS_FALLBACK_FILE);
+    console.log(`✅ ${synced} feriados sincronizados desde archivo de persistencia a BD`);
+  } catch (err) {
+    console.warn('⚠️ Error al sincronizar holidays_fallback.json a BD:', err.message);
+  }
+}
+
 app.listen(PORT, async () => {
   console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
-  await ensureIndexes();
-  await migrateActivitiesAuditTrail();
+
+  // Initialize tables with graceful error handling — don't crash the server
+  try {
+    await ensureIndexes();
+  } catch (err) {
+    console.warn('⚠️ ensureIndexes failed (non-critical):', err.message);
+  }
+
+  try {
+    await ensureContestationsTable();
+  } catch (err) {
+    console.warn('⚠️ ensureContestationsTable failed (non-critical):', err.message);
+  }
+
+  try {
+    await createActivityFilesTable();
+  } catch (err) {
+    console.warn('⚠️ createActivityFilesTable failed (non-critical):', err.message);
+  }
+
+  try {
+    await createHolidaysTable();
+  } catch (err) {
+    console.warn('⚠️ createHolidaysTable failed (non-critical):', err.message);
+  }
+
+  try {
+    await syncFallbackFileToDb();
+  } catch (err) {
+    console.warn('⚠️ syncFallbackFileToDb failed (non-critical):', err.message);
+  }
+
+  try {
+    await migrateHolidays2026();
+  } catch (err) {
+    console.warn('⚠️ migrateHolidays2026 failed (non-critical):', err.message);
+  }
+
+  try {
+    await migrateActivitiesAuditTrail();
+  } catch (err) {
+    console.warn('⚠️ migrateActivitiesAuditTrail failed (non-critical):', err.message);
+  }
+
+  try {
+    await migrateDocumentNumberColumn();
+  } catch (err) {
+    console.warn('⚠️ migrateDocumentNumberColumn failed (non-critical):', err.message);
+  }
+
+  try {
+    await migrateDocumentUniqueConstraints();
+  } catch (err) {
+    console.warn('⚠️ migrateDocumentUniqueConstraints failed (non-critical):', err.message);
+  }
+
+  // 📦 Verificación de almacenamiento persistente al arrancar
+  try {
+    await checkUploadStorageHealth();
+  } catch (err) {
+    console.warn('⚠️ checkUploadStorageHealth failed (non-critical):', err.message);
+  }
 });
+
+// 📦 Verifica salud del almacenamiento de archivos al inicio
+// Detecta si hay referencias en BD a archivos que ya no existen en disco
+// (típicamente por contenedor sin volumen persistente configurado).
+async function checkUploadStorageHealth() {
+  console.log(`📦 [storage-check] UPLOAD_DIR=${UPLOAD_DIR}`);
+  let diskFiles = [];
+  try {
+    diskFiles = fs.readdirSync(UPLOAD_DIR);
+    console.log(`📦 [storage-check] Archivos en disco: ${diskFiles.length}`);
+  } catch (e) {
+    console.error(`📦 [storage-check] ❌ No se pudo leer UPLOAD_DIR:`, e.message);
+    return;
+  }
+
+  try {
+    const [docsWithFiles] = await pool.query(
+      "SELECT id, file_url FROM documents WHERE file_url IS NOT NULL AND file_url != ''"
+    );
+    if (docsWithFiles.length === 0) {
+      console.log(`📦 [storage-check] No hay documentos con archivos en BD`);
+      return;
+    }
+
+    let missing = 0;
+    const missingExamples = [];
+    for (const doc of docsWithFiles) {
+      const filename = doc.file_url.split('/').pop();
+      if (filename && !diskFiles.includes(filename)) {
+        missing++;
+        if (missingExamples.length < 3) missingExamples.push({ docId: doc.id, filename });
+      }
+    }
+
+    if (missing === 0) {
+      console.log(`📦 [storage-check] ✅ Todos los archivos en BD existen en disco (${docsWithFiles.length} documentos)`);
+    } else {
+      console.warn(`📦 [storage-check] ⚠️ ${missing}/${docsWithFiles.length} archivos referenciados en BD NO existen en disco`);
+      console.warn(`📦 [storage-check] Ejemplos:`, missingExamples);
+      console.warn(`📦 [storage-check] 💡 Probable causa: contenedor sin volumen persistente para ${UPLOAD_DIR}`);
+      console.warn(`📦 [storage-check] 💡 Solución: configurar volumen persistente en Coolify para ${UPLOAD_DIR}`);
+    }
+  } catch (err) {
+    console.error(`📦 [storage-check] Error consultando BD:`, err.message);
+  }
+}

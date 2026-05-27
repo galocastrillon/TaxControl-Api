@@ -1,0 +1,15 @@
+[phases.setup]
+cmds = [
+  "echo 'APT::Get::AllowUnauthenticated \"true\";' > /etc/apt/apt.conf.d/99allow-unauth || true",
+  "sed -i 's|http://security.ubuntu.com|http://archive.ubuntu.com|g' /etc/apt/sources.list || true",
+  "apt-get update || true"
+]
+
+[phases.install]
+cmds = ["npm ci"]
+
+[phases.build]
+cmds = []
+
+[start]
+cmd = "node index.js"
