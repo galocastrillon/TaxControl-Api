@@ -871,12 +871,13 @@ app.get("/api/documents", requireAuth, async (req, res) => {
     if (cached) return res.json(cached);
 
     let query = `
-      SELECT d.id, d.title, d.trarnite_number, d.document_number, d.company_id, d.authority,
+      SELECT d.id, d.title, d.trarnite_number, d.document_number, d.company_id, c.name as company_name, d.authority,
              d.department, d.notification_date, d.days_limit, d.day_type, d.due_date, d.status,
              d.summary_es, d.summary_cn, d.file_name, d.file_url, d.related_doc_id,
              d.created_by, u.name as created_by_name, d.created_at,
              d.last_edited_by, u2.name as last_edited_by_name, d.last_edited_at
       FROM documents d
+      LEFT JOIN companies c ON d.company_id = c.id
       LEFT JOIN users u ON d.created_by = u.id
       LEFT JOIN users u2 ON d.last_edited_by = u2.id
       WHERE 1=1
@@ -931,7 +932,7 @@ app.get("/api/documents", requireAuth, async (req, res) => {
       trarniteNumber: d.trarnite_number,
       documentNumber: d.document_number,
       companyId: d.company_id,
-      company: d.company_id || d.company_name,
+      company: d.company_name || 'Unknown',
       authority: d.authority,
       department: d.department,
       notificationDate: d.notification_date?.toISOString?.().split('T')[0],
