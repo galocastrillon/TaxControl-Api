@@ -26,7 +26,7 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 
 // 2️⃣ Crear app
 const app = express();
-app.use(compression()); // ⚡ Gzip compression for all responses
+// CORS DEBE ir antes de compression para que el preflight OPTIONS no quede colgado
 app.use(cors({
   origin: [
     'http://taxcontrolapp.192.168.60.109.sslip.io',
@@ -36,6 +36,9 @@ app.use(cors({
   ],
   credentials: true
 }));
+// Responder explícitamente a preflight para todas las rutas
+app.options(/.*/, cors());
+app.use(compression()); // ⚡ Gzip compression for all responses
 // 50MB para soportar archivos en base64 (PDFs, imágenes grandes)
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
