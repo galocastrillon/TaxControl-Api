@@ -26,6 +26,15 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 
 // 2️⃣ Crear app
 const app = express();
+// Private Network Access (Chrome/Edge 130+): autorizar peticiones desde un origen
+// público (*.sslip.io) hacia una IP privada (192.168.x). Sin este header el navegador
+// bloquea el preflight con ERR_EMPTY_RESPONSE.
+app.use((req, res, next) => {
+  if (req.headers['access-control-request-private-network']) {
+    res.header('Access-Control-Allow-Private-Network', 'true');
+  }
+  next();
+});
 // CORS DEBE ir antes de compression para que el preflight OPTIONS no quede colgado
 app.use(cors({
   origin: [
