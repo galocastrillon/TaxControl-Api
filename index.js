@@ -3294,7 +3294,7 @@ async function syncFallbackFileToDb() {
   }
 }
 
-app.listen(PORT, async () => {
+app.listen(PORT, '0.0.0.0', async () => {
   console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
 
   // Initialize tables with graceful error handling — don't crash the server
