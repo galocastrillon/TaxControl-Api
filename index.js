@@ -1640,12 +1640,13 @@ app.put("/api/activities/:id", requireAuth, async (req, res) => {
   try {
     // Actualizar actividad con los campos incluyendo completedBy y completedAt
     if (status === 'Completed') {
+      // completed_by es FK a users.id: usar el id del usuario autenticado, no el nombre.
       await pool.query(
         `UPDATE activities
          SET description=?, sub_description=?, due_date=?, priority=?, status=?,
              completed_by=?, completed_at=?
          WHERE id=?`,
-        [description, subDescription, dueDate, priority, status, completedBy, completedAt, req.params.id]
+        [description, subDescription, dueDate, priority, status, req.user.user_id, completedAt || new Date().toISOString().split('T')[0], req.params.id]
       );
     } else {
       await pool.query(
@@ -1703,12 +1704,13 @@ app.post("/api/activities/:id/update", requireAuth, async (req, res) => {
   console.log(`📥 POST /api/activities/${req.params.id}/update → status=${status}, completedBy=${completedBy}, completedAt=${completedAt}, dueDate=${dueDate}`);
   try {
     if (status === 'Completed') {
+      // completed_by es FK a users.id: usar el id del usuario autenticado, no el nombre.
       await pool.query(
         `UPDATE activities
          SET description=?, sub_description=?, due_date=?, priority=?, status=?,
              completed_by=?, completed_at=?
          WHERE id=?`,
-        [description, subDescription, dueDate, priority, status, completedBy, completedAt, req.params.id]
+        [description, subDescription, dueDate, priority, status, req.user.user_id, completedAt || new Date().toISOString().split('T')[0], req.params.id]
       );
     } else {
       await pool.query(
@@ -1733,8 +1735,9 @@ app.post("/api/activities/:id/update", requireAuth, async (req, res) => {
 // vía GET con query params (sin cuerpo) para que completar/reabrir funcione.
 app.get("/api/activities/:id/set-status", requireAuth, async (req, res) => {
   const status = req.query.status;
-  const completedBy = req.query.completedBy || null;
-  const completedAt = req.query.completedAt || null;
+  // completed_by es FK a users.id: usar el id del usuario autenticado, no el nombre.
+  const completedBy = req.user.user_id;
+  const completedAt = req.query.completedAt || new Date().toISOString().split('T')[0];
   console.log(`📥 GET set-status /api/activities/${req.params.id} → status=${status}, completedBy=${completedBy}, completedAt=${completedAt}`);
   try {
     if (status === 'Completed') {
@@ -1775,7 +1778,7 @@ app.put("/api/activities/:id/complete", requireAuth, async (req, res) => {
   try {
     await pool.query(
       `UPDATE activities SET status='Completed', completed_by=?, completed_at=NOW() WHERE id=?`,
-      [req.user.name, req.params.id]
+      [req.user.user_id, req.params.id]
     );
     res.json({ ok: true });
   } catch (error) {
