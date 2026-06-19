@@ -84,17 +84,13 @@ const getCachedDocs = (key) => {
 const setCachedDocs = (key, data) => docsCache.set(key, { data, cachedAt: Date.now() });
 const invalidateDocsCache = () => docsCache.clear();
 
-// Actualiza el estado del documento a "Completado" si todas sus actividades lo están
-const updateDocumentStatusIfAllActivitiesCompleted = async (activityId) => {
+// Sincroniza el estado del documento según sus actividades, replicando la lógica
+// del frontend (syncDocumentStatus): todas completadas → 'Completado';
+// hay actividades pero no todas → 'En progreso'; sin actividades → 'Inicializado'.
+// Si el estado cambia, persiste y notifica por email (igual que PUT /api/documents/:id).
+// Valores canónicos (types.ts): 'Inicializado' | 'En progreso' | 'Completado'.
+const syncDocumentStatusFromActivities = async (docId, changedBy) => {
   try {
-    // Obtener document_id de la actividad
-    const [activity] = await pool.query(
-      'SELECT document_id FROM activities WHERE id = ?',
-      [activityId]
-    );
-    if (activity.length === 0) return;
-    const docId = activity[0].document_id;
-
     // Contar actividades totales y completadas
     const [stats] = await pool.query(
       `SELECT
@@ -103,26 +99,55 @@ const updateDocumentStatusIfAllActivitiesCompleted = async (activityId) => {
        FROM activities WHERE document_id = ?`,
       [docId]
     );
-    const { total, completed } = stats[0];
+    const total = Number(stats[0].total);
+    const completed = Number(stats[0].completed);
 
-    if (total > 0 && total === completed) {
-      // Todas las actividades completadas → marcar documento como Completado
-      await pool.query(
-        'UPDATE documents SET status = ? WHERE id = ?',
-        ['Completado', docId]
-      );
-      console.log(`✅ Documento ${docId} marcado como Completado (${completed}/${total} actividades)`);
-    } else if (total > completed && completed > 0) {
-      // Hay actividades pendientes → asegurar que documento NO sea "Completado"
-      await pool.query(
-        'UPDATE documents SET status = ? WHERE id = ? AND status = ?',
-        ['En Progreso', docId, 'Completado']
-      );
-      console.log(`🔄 Documento ${docId} vuelto a "En Progreso" (${completed}/${total} actividades)`);
-    }
+    // Misma regla que el frontend (DocumentDetail.tsx → syncDocumentStatus)
+    let newStatus;
+    if (total > 0 && total === completed) newStatus = 'Completado';
+    else if (total > 0) newStatus = 'En progreso';
+    else newStatus = 'Inicializado';
+
+    // Leer estado actual para detectar cambio
+    const [docRows] = await pool.query(
+      'SELECT status, title, trarnite_number, authority FROM documents WHERE id = ?',
+      [docId]
+    );
+    if (docRows.length === 0) return;
+    const oldStatus = docRows[0].status;
+    if (oldStatus === newStatus) return; // sin cambio, no hacer nada
+
+    await pool.query('UPDATE documents SET status = ? WHERE id = ?', [newStatus, docId]);
     invalidateDocsCache();
+    console.log(`🔄 Documento ${docId}: "${oldStatus}" → "${newStatus}" (${completed}/${total} actividades)`);
+
+    // Notificar por email el cambio de estado (igual que PUT /api/documents/:id)
+    try {
+      const recipients = await getDocumentRecipients(docId);
+      const doc = docRows[0];
+      const emailTemplate = getStatusChangeEmailContent(
+        doc.title, doc.trarnite_number, oldStatus, newStatus, changedBy, doc.authority
+      );
+      await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, docId, 'status_change');
+    } catch (mailErr) {
+      console.error('Error enviando notificación de cambio de estado:', mailErr.message);
+    }
   } catch (error) {
-    console.error('Error updating document status:', error);
+    console.error('Error sincronizando estado del documento:', error);
+  }
+};
+
+// Resuelve el document_id de una actividad y sincroniza el estado del documento.
+const syncDocumentStatusByActivity = async (activityId, changedBy) => {
+  try {
+    const [activity] = await pool.query(
+      'SELECT document_id FROM activities WHERE id = ?',
+      [activityId]
+    );
+    if (activity.length === 0) return;
+    await syncDocumentStatusFromActivities(activity[0].document_id, changedBy);
+  } catch (error) {
+    console.error('Error resolviendo documento de la actividad:', error);
   }
 };
 
@@ -1667,6 +1692,9 @@ app.post("/api/activities", requireAuth, async (req, res) => {
       await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, docId, 'activity_added');
     }
 
+    // Resincronizar estado del documento (al agregar la primera actividad pasa a 'En progreso')
+    await syncDocumentStatusFromActivities(docId, req.user.name);
+
     const responseFiles = files && Array.isArray(files) ? files.map(f => ({ name: f.name, url: f.url })) : [];
     res.status(201).json({ id, docId, description, subDescription, dueDate, priority: priority || 'Medium', status: 'Pending', createdBy: req.user.name, createdAt: new Date().toISOString().split('T')[0], files: responseFiles });
   } catch (error) {
@@ -1731,7 +1759,7 @@ app.put("/api/activities/:id", requireAuth, async (req, res) => {
 
     invalidateDocsCache();
     // Si todas las actividades están completadas, marcar documento como Completado
-    await updateDocumentStatusIfAllActivitiesCompleted(req.params.id);
+    await syncDocumentStatusByActivity(req.params.id, req.user.name);
     res.json({ ok: true });
   } catch (error) {
     console.error('PUT /api/activities/:id error:', error);
@@ -1767,7 +1795,7 @@ app.post("/api/activities/:id/update", requireAuth, async (req, res) => {
     }
     invalidateDocsCache();
     // Si todas las actividades están completadas, marcar documento como Completado
-    await updateDocumentStatusIfAllActivitiesCompleted(req.params.id);
+    await syncDocumentStatusByActivity(req.params.id, req.user.name);
     res.json({ ok: true });
   } catch (error) {
     console.error('POST /api/activities/:id/update error:', error);
@@ -1799,7 +1827,7 @@ app.get("/api/activities/:id/set-status", requireAuth, async (req, res) => {
     }
     invalidateDocsCache();
     // Si todas las actividades están completadas, marcar documento como Completado
-    await updateDocumentStatusIfAllActivitiesCompleted(req.params.id);
+    await syncDocumentStatusByActivity(req.params.id, req.user.name);
     res.set('Cache-Control', 'no-store');
     res.json({ ok: true });
   } catch (error) {
@@ -1811,10 +1839,21 @@ app.get("/api/activities/:id/set-status", requireAuth, async (req, res) => {
 // 📋 DELETE eliminar actividad
 app.delete("/api/activities/:id", requireAuth, async (req, res) => {
   try {
+    // Capturar el documento ANTES de borrar la actividad (para resincronizar su estado)
+    const [activity] = await pool.query(
+      "SELECT document_id FROM activities WHERE id = ?",
+      [req.params.id]
+    );
+    const docId = activity.length > 0 ? activity[0].document_id : null;
+
     // Eliminar archivos asociados primero
     await pool.query("DELETE FROM activity_files WHERE activity_id = ?", [req.params.id]);
     // Luego eliminar la actividad
     await pool.query("DELETE FROM activities WHERE id = ?", [req.params.id]);
+
+    // Resincronizar el estado del documento (puede volver a 'Inicializado' si era la última)
+    if (docId) await syncDocumentStatusFromActivities(docId, req.user.name);
+
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1830,7 +1869,7 @@ app.put("/api/activities/:id/complete", requireAuth, async (req, res) => {
     );
     invalidateDocsCache();
     // Si todas las actividades están completadas, marcar documento como Completado
-    await updateDocumentStatusIfAllActivitiesCompleted(req.params.id);
+    await syncDocumentStatusByActivity(req.params.id, req.user.name);
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
