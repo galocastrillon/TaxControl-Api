@@ -1434,7 +1434,11 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
       d.title, d.trarniteNumber || null, d.documentNumber || null, companyId, d.authority,
       d.department || null, notificationDate, d.daysLimit || 0, dayType,
       dueDate, d.status || 'Inicializado', d.summaryEs || '', d.summaryCn || '',
-      d.fileName || null, d.fileUrl || null, d.relatedDoc || null, req.user.user_id, id
+      // Conservar archivo existente si el frontend no envía fileName/fileUrl
+      // (las ediciones que no cambian el PDF lo omiten para evitar cuerpos enormes).
+      d.fileName !== undefined ? d.fileName : oldDoc.file_name,
+      d.fileUrl !== undefined ? d.fileUrl : oldDoc.file_url,
+      d.relatedDoc || null, req.user.user_id, id
     ]);
 
     if (result.affectedRows === 0) {
