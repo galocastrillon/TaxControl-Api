@@ -1663,22 +1663,36 @@ app.put("/api/activities/:id", requireAuth, async (req, res) => {
       }
     }
 
-    // Retornar la actividad actualizada con sus archivos
-    const [[updatedActivity]] = await pool.query(
+    // Retornar la actividad actualizada con sus archivos (transformada a camelCase como en GET)
+    const [rows] = await pool.query(
       'SELECT * FROM activities WHERE id = ?',
       [req.params.id]
     );
+    const updatedActivity = rows[0];
 
-    let activityFiles = [];
-    if (updatedActivity) {
-      const [files] = await pool.query(
-        'SELECT id, file_name as name, file_url as url FROM activity_files WHERE activity_id = ?',
-        [req.params.id]
-      );
-      activityFiles = files;
+    if (!updatedActivity) {
+      return res.status(404).json({ error: 'Actividad no encontrada' });
     }
 
-    const result = updatedActivity ? { ...updatedActivity, files: activityFiles } : null;
+    const [activityFiles] = await pool.query(
+      'SELECT id, file_name as name, file_url as url FROM activity_files WHERE activity_id = ?',
+      [req.params.id]
+    );
+
+    const result = {
+      id: updatedActivity.id,
+      docId: updatedActivity.document_id,
+      description: updatedActivity.description,
+      subDescription: updatedActivity.sub_description,
+      status: updatedActivity.status,
+      dueDate: updatedActivity.due_date?.toISOString?.().split('T')[0] || updatedActivity.due_date,
+      priority: updatedActivity.priority,
+      createdBy: updatedActivity.created_by,
+      createdAt: updatedActivity.created_at?.toISOString?.().split('T')[0] || updatedActivity.created_at,
+      completedBy: updatedActivity.completed_by,
+      completedAt: updatedActivity.completed_at?.toISOString?.().split('T')[0] || updatedActivity.completed_at,
+      files: (activityFiles || []).map(f => ({ id: f.id, name: f.name, url: f.url }))
+    };
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
