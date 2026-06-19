@@ -84,6 +84,48 @@ const getCachedDocs = (key) => {
 const setCachedDocs = (key, data) => docsCache.set(key, { data, cachedAt: Date.now() });
 const invalidateDocsCache = () => docsCache.clear();
 
+// Actualiza el estado del documento a "Completado" si todas sus actividades lo están
+const updateDocumentStatusIfAllActivitiesCompleted = async (activityId) => {
+  try {
+    // Obtener document_id de la actividad
+    const [activity] = await pool.query(
+      'SELECT document_id FROM activities WHERE id = ?',
+      [activityId]
+    );
+    if (activity.length === 0) return;
+    const docId = activity[0].document_id;
+
+    // Contar actividades totales y completadas
+    const [stats] = await pool.query(
+      `SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completed
+       FROM activities WHERE document_id = ?`,
+      [docId]
+    );
+    const { total, completed } = stats[0];
+
+    if (total > 0 && total === completed) {
+      // Todas las actividades completadas → marcar documento como Completado
+      await pool.query(
+        'UPDATE documents SET status = ? WHERE id = ?',
+        ['Completado', docId]
+      );
+      console.log(`✅ Documento ${docId} marcado como Completado (${completed}/${total} actividades)`);
+    } else if (total > completed && completed > 0) {
+      // Hay actividades pendientes → asegurar que documento NO sea "Completado"
+      await pool.query(
+        'UPDATE documents SET status = ? WHERE id = ? AND status = ?',
+        ['En Progreso', docId, 'Completado']
+      );
+      console.log(`🔄 Documento ${docId} vuelto a "En Progreso" (${completed}/${total} actividades)`);
+    }
+    invalidateDocsCache();
+  } catch (error) {
+    console.error('Error updating document status:', error);
+  }
+};
+
 // Calcula la fecha de descanso observada según reglas de traslado Ecuador (Ley Orgánica Reformatoria)
 // Domingo(0)→Lunes, Martes(2)→Lunes previo, Miércoles(3)→Viernes, Jueves(4)→Viernes, Lunes/Viernes→se mantiene
 function calculateCalendarDate(officialDateStr) {
@@ -1688,6 +1730,8 @@ app.put("/api/activities/:id", requireAuth, async (req, res) => {
     }
 
     invalidateDocsCache();
+    // Si todas las actividades están completadas, marcar documento como Completado
+    await updateDocumentStatusIfAllActivitiesCompleted(req.params.id);
     res.json({ ok: true });
   } catch (error) {
     console.error('PUT /api/activities/:id error:', error);
@@ -1722,6 +1766,8 @@ app.post("/api/activities/:id/update", requireAuth, async (req, res) => {
       );
     }
     invalidateDocsCache();
+    // Si todas las actividades están completadas, marcar documento como Completado
+    await updateDocumentStatusIfAllActivitiesCompleted(req.params.id);
     res.json({ ok: true });
   } catch (error) {
     console.error('POST /api/activities/:id/update error:', error);
@@ -1752,6 +1798,8 @@ app.get("/api/activities/:id/set-status", requireAuth, async (req, res) => {
       );
     }
     invalidateDocsCache();
+    // Si todas las actividades están completadas, marcar documento como Completado
+    await updateDocumentStatusIfAllActivitiesCompleted(req.params.id);
     res.set('Cache-Control', 'no-store');
     res.json({ ok: true });
   } catch (error) {
@@ -1780,6 +1828,9 @@ app.put("/api/activities/:id/complete", requireAuth, async (req, res) => {
       `UPDATE activities SET status='Completed', completed_by=?, completed_at=NOW() WHERE id=?`,
       [req.user.user_id, req.params.id]
     );
+    invalidateDocsCache();
+    // Si todas las actividades están completadas, marcar documento como Completado
+    await updateDocumentStatusIfAllActivitiesCompleted(req.params.id);
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
