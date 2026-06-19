@@ -1685,12 +1685,12 @@ app.put("/api/activities/:id", requireAuth, async (req, res) => {
       description: updatedActivity.description,
       subDescription: updatedActivity.sub_description,
       status: updatedActivity.status,
-      dueDate: updatedActivity.due_date?.toISOString?.().split('T')[0] || updatedActivity.due_date,
+      dueDate: typeof updatedActivity.due_date === 'string' ? updatedActivity.due_date : updatedActivity.due_date?.toISOString?.().split('T')[0],
       priority: updatedActivity.priority,
       createdBy: updatedActivity.created_by,
-      createdAt: updatedActivity.created_at?.toISOString?.().split('T')[0] || updatedActivity.created_at,
+      createdAt: typeof updatedActivity.created_at === 'string' ? updatedActivity.created_at : updatedActivity.created_at?.toISOString?.().split('T')[0],
       completedBy: updatedActivity.completed_by,
-      completedAt: updatedActivity.completed_at?.toISOString?.().split('T')[0] || updatedActivity.completed_at,
+      completedAt: typeof updatedActivity.completed_at === 'string' ? updatedActivity.completed_at : updatedActivity.completed_at?.toISOString?.().split('T')[0],
       files: (activityFiles || []).map(f => ({ id: f.id, name: f.name, url: f.url }))
     };
     res.json(result);
