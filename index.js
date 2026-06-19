@@ -38,7 +38,9 @@ app.use((req, res, next) => {
 // CORS DEBE ir antes de compression para que el preflight OPTIONS no quede colgado
 app.use(cors({
   origin: [
-    'http://taxcontrolapp.192.168.60.109.sslip.io',
+    'http://192.168.60.109',
+    'https://192.168.60.109',
+    'http://192.168.60.109/taxcontrol',
     'https://taxcontrolapp.192.168.60.109.sslip.io',
     'http://localhost:3000',
     'http://localhost:5173'
@@ -345,7 +347,7 @@ const getWelcomeEmailContent = (name, email, password, role = "Operator") => {
             </div>
 
             <p style="margin-top: 20px;">
-              <a href="http://taxcontrolapp.192.168.60.109.sslip.io/#/login"
+              <a href="http://192.168.60.109/taxcontrol/#/login"
                  style="background-color: #204070; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
                 Acceder a Tax Control
               </a>
@@ -369,7 +371,7 @@ const getWelcomeEmailContent = (name, email, password, role = "Operator") => {
             </div>
 
             <p style="margin-top: 20px;">
-              <a href="http://taxcontrolapp.192.168.60.109.sslip.io/#/login"
+              <a href="http://192.168.60.109/taxcontrol/#/login"
                  style="background-color: #204070; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
                 登录 Tax Control
               </a>
@@ -2532,7 +2534,7 @@ app.post("/api/test-email/reset", requireAuth, async (req, res) => {
             <h2 style="color: #204070;">🔑 Restablecer Contraseña</h2>
             <p>Ha solicitado restablecer su contraseña en Tax Control.</p>
             <p style="margin: 30px 0;">
-              <a href="http://taxcontrolapp.192.168.60.109.sslip.io/#/reset-password?token=DEMO_TOKEN_12345"
+              <a href="http://192.168.60.109/taxcontrol/#/reset-password?token=DEMO_TOKEN_12345"
                  style="background-color: #204070; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
                 Restablecer Contraseña
               </a>
@@ -2574,7 +2576,7 @@ app.post("/api/test-email/invitation", requireAuth, async (req, res) => {
               <li>Contraseña Temporal: TempPassword123!</li>
             </ul>
             <p style="margin: 30px 0;">
-              <a href="http://taxcontrolapp.192.168.60.109.sslip.io/#/login"
+              <a href="http://192.168.60.109/taxcontrol/#/login"
                  style="background-color: #204070; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
                 Ingresar a Tax Control
               </a>
@@ -2703,7 +2705,7 @@ const getNewDocumentEmailContent = (doc) => ({
           <p style="margin:5px 0;"><strong>⏰ Vencimiento:</strong> ${doc.due_date}</p>
           <p style="margin:5px 0;"><strong>📊 Estado:</strong> ${doc.status}</p>
         </div>
-        <a href="http://taxcontrolapp.192.168.60.109.sslip.io/#/documents/${doc.id}"
+        <a href="http://192.168.60.109/taxcontrol/#/documents/${doc.id}"
            style="background:#204070;color:white;padding:12px 24px;text-decoration:none;border-radius:4px;display:inline-block;margin-top:10px;">
           Ver Documento
         </a>
@@ -2717,7 +2719,7 @@ const getNewDocumentEmailContent = (doc) => ({
           <p style="margin:5px 0;"><strong>📅 通知日期：</strong> ${doc.notification_date}</p>
           <p style="margin:5px 0;"><strong>⏰ 到期日期：</strong> ${doc.due_date}</p>
         </div>
-        <a href="http://taxcontrolapp.192.168.60.109.sslip.io/#/documents/${doc.id}"
+        <a href="http://192.168.60.109/taxcontrol/#/documents/${doc.id}"
            style="background:#204070;color:white;padding:12px 24px;text-decoration:none;border-radius:4px;display:inline-block;margin-top:10px;">
           查看文件
         </a>
