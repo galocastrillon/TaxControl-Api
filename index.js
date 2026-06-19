@@ -1613,16 +1613,16 @@ app.post("/api/activities", requireAuth, async (req, res) => {
 
 // 📋 PUT actualizar actividad
 app.put("/api/activities/:id", requireAuth, async (req, res) => {
-  const { description, subDescription, dueDate, priority, status, files } = req.body;
+  const { description, subDescription, dueDate, priority, status, completedBy, completedAt, files } = req.body;
   try {
-    // Si el status cambia a Completed, registrar quién y cuándo completó
+    // Actualizar actividad con los campos incluyendo completedBy y completedAt
     if (status === 'Completed') {
       await pool.query(
         `UPDATE activities
          SET description=?, sub_description=?, due_date=?, priority=?, status=?,
-             completed_by=COALESCE(completed_by, ?), completed_at=COALESCE(completed_at, NOW())
+             completed_by=?, completed_at=?
          WHERE id=?`,
-        [description, subDescription, dueDate, priority, status, req.user.user_id, req.params.id]
+        [description, subDescription, dueDate, priority, status, completedBy, completedAt, req.params.id]
       );
     } else {
       await pool.query(
@@ -1663,7 +1663,23 @@ app.put("/api/activities/:id", requireAuth, async (req, res) => {
       }
     }
 
-    res.json({ ok: true });
+    // Retornar la actividad actualizada con sus archivos
+    const [[updatedActivity]] = await pool.query(
+      'SELECT * FROM activities WHERE id = ?',
+      [req.params.id]
+    );
+
+    let activityFiles = [];
+    if (updatedActivity) {
+      const [files] = await pool.query(
+        'SELECT id, file_name as name, file_url as url FROM activity_files WHERE activity_id = ?',
+        [req.params.id]
+      );
+      activityFiles = files;
+    }
+
+    const result = updatedActivity ? { ...updatedActivity, files: activityFiles } : null;
+    res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
