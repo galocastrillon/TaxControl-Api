@@ -1694,6 +1694,39 @@ app.put("/api/activities/:id", requireAuth, async (req, res) => {
   }
 });
 
+// 📋 POST actualizar estado de actividad (alias de PUT vía POST)
+// Algunos proxies/WAF bloquean o manejan mal el método PUT y cierran la
+// conexión sin respuesta (ERR_EMPTY_RESPONSE). POST es aceptado de forma
+// universal, así que exponemos la misma lógica de actualización vía POST.
+app.post("/api/activities/:id/update", requireAuth, async (req, res) => {
+  const { description, subDescription, dueDate, priority, status, completedBy, completedAt } = req.body;
+  console.log(`📥 POST /api/activities/${req.params.id}/update → status=${status}, completedBy=${completedBy}, completedAt=${completedAt}, dueDate=${dueDate}`);
+  try {
+    if (status === 'Completed') {
+      await pool.query(
+        `UPDATE activities
+         SET description=?, sub_description=?, due_date=?, priority=?, status=?,
+             completed_by=?, completed_at=?
+         WHERE id=?`,
+        [description, subDescription, dueDate, priority, status, completedBy, completedAt, req.params.id]
+      );
+    } else {
+      await pool.query(
+        `UPDATE activities
+         SET description=?, sub_description=?, due_date=?, priority=?, status=?,
+             completed_by=NULL, completed_at=NULL
+         WHERE id=?`,
+        [description, subDescription, dueDate, priority, status, req.params.id]
+      );
+    }
+    invalidateDocsCache();
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('POST /api/activities/:id/update error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 📋 DELETE eliminar actividad
 app.delete("/api/activities/:id", requireAuth, async (req, res) => {
   try {
@@ -3341,7 +3374,7 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
-  console.log('🏷️ build marker: activities-put-fix-v4');
+  console.log('🏷️ build marker: activities-post-update-v5');
 
   // Initialize tables with graceful error handling — don't crash the server
   try {
