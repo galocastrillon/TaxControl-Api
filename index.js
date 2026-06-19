@@ -1727,6 +1727,36 @@ app.post("/api/activities/:id/update", requireAuth, async (req, res) => {
   }
 });
 
+// 🩹 Workaround de transporte: el proxy (Traefik/Coolify) descarta las
+// peticiones que llevan CUERPO (POST/PUT/DELETE) → ERR_EMPTY_RESPONSE, mientras
+// que los GET sin cuerpo sí llegan. Exponemos el cambio de estado de actividad
+// vía GET con query params (sin cuerpo) para que completar/reabrir funcione.
+app.get("/api/activities/:id/set-status", requireAuth, async (req, res) => {
+  const status = req.query.status;
+  const completedBy = req.query.completedBy || null;
+  const completedAt = req.query.completedAt || null;
+  console.log(`📥 GET set-status /api/activities/${req.params.id} → status=${status}, completedBy=${completedBy}, completedAt=${completedAt}`);
+  try {
+    if (status === 'Completed') {
+      await pool.query(
+        `UPDATE activities SET status=?, completed_by=?, completed_at=? WHERE id=?`,
+        [status, completedBy, completedAt, req.params.id]
+      );
+    } else {
+      await pool.query(
+        `UPDATE activities SET status=?, completed_by=NULL, completed_at=NULL WHERE id=?`,
+        [status, req.params.id]
+      );
+    }
+    invalidateDocsCache();
+    res.set('Cache-Control', 'no-store');
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('GET /api/activities/:id/set-status error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 📋 DELETE eliminar actividad
 app.delete("/api/activities/:id", requireAuth, async (req, res) => {
   try {
@@ -3374,7 +3404,7 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
-  console.log('🏷️ build marker: activities-post-update-v5');
+  console.log('🏷️ build marker: activities-getstatus-v6');
 
   // Initialize tables with graceful error handling — don't crash the server
   try {
