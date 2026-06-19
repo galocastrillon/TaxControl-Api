@@ -1677,7 +1677,7 @@ app.put("/api/activities/:id", requireAuth, async (req, res) => {
       }
     }
 
-    invalidateCache('getActivities');
+    invalidateDocsCache();
     res.json({ ok: true });
   } catch (error) {
     console.error('PUT /api/activities/:id error:', error);
@@ -3321,9 +3321,18 @@ async function syncFallbackFileToDb() {
   }
 }
 
+// 🛡️ Manejador de errores global: garantiza que NINGUNA petición quede sin
+// respuesta (evita ERR_EMPTY_RESPONSE cuando un error escapa de un handler).
+// Debe registrarse después de todas las rutas.
+app.use((err, req, res, next) => {
+  console.error('💥 Express error handler:', req.method, req.originalUrl, '→', err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: err.message || 'Error interno del servidor' });
+});
+
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
-  console.log('🏷️ build marker: activities-put-diag-v2');
+  console.log('🏷️ build marker: activities-put-fix-v3');
 
   // Initialize tables with graceful error handling — don't crash the server
   try {
