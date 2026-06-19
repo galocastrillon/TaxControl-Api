@@ -35,6 +35,15 @@ process.on('unhandledRejection', (reason) => {
 
 // 2️⃣ Crear app
 const app = express();
+// 🔎 Logger de TODAS las peticiones entrantes (antes de cualquier parsing/auth).
+// Sirve para confirmar si una petición (p.ej. PUT actividades) llega realmente
+// al proceso Node o muere antes en el proxy (Traefik) → ERR_EMPTY_RESPONSE.
+app.use((req, res, next) => {
+  console.log(`➡️  ${req.method} ${req.originalUrl} (len=${req.headers['content-length'] || 0})`);
+  res.on('finish', () => console.log(`⬅️  ${req.method} ${req.originalUrl} → ${res.statusCode}`));
+  res.on('close', () => { if (!res.writableEnded) console.log(`✂️  ${req.method} ${req.originalUrl} → conexión cerrada SIN respuesta`); });
+  next();
+});
 // Private Network Access (Chrome/Edge 130+): autorizar peticiones desde un origen
 // público (*.sslip.io) hacia una IP privada (192.168.x). Sin este header el navegador
 // bloquea el preflight con ERR_EMPTY_RESPONSE.
@@ -3332,7 +3341,7 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
-  console.log('🏷️ build marker: activities-put-fix-v3');
+  console.log('🏷️ build marker: activities-put-fix-v4');
 
   // Initialize tables with graceful error handling — don't crash the server
   try {
