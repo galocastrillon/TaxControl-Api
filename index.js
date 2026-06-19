@@ -1663,38 +1663,10 @@ app.put("/api/activities/:id", requireAuth, async (req, res) => {
       }
     }
 
-    // Retornar la actividad actualizada con sus archivos (transformada a camelCase como en GET)
-    const [rows] = await pool.query(
-      'SELECT * FROM activities WHERE id = ?',
-      [req.params.id]
-    );
-    const updatedActivity = rows[0];
-
-    if (!updatedActivity) {
-      return res.status(404).json({ error: 'Actividad no encontrada' });
-    }
-
-    const [activityFiles] = await pool.query(
-      'SELECT id, file_name as name, file_url as url FROM activity_files WHERE activity_id = ?',
-      [req.params.id]
-    );
-
-    const result = {
-      id: updatedActivity.id,
-      docId: updatedActivity.document_id,
-      description: updatedActivity.description,
-      subDescription: updatedActivity.sub_description,
-      status: updatedActivity.status,
-      dueDate: typeof updatedActivity.due_date === 'string' ? updatedActivity.due_date : updatedActivity.due_date?.toISOString?.().split('T')[0],
-      priority: updatedActivity.priority,
-      createdBy: updatedActivity.created_by,
-      createdAt: typeof updatedActivity.created_at === 'string' ? updatedActivity.created_at : updatedActivity.created_at?.toISOString?.().split('T')[0],
-      completedBy: updatedActivity.completed_by,
-      completedAt: typeof updatedActivity.completed_at === 'string' ? updatedActivity.completed_at : updatedActivity.completed_at?.toISOString?.().split('T')[0],
-      files: (activityFiles || []).map(f => ({ id: f.id, name: f.name, url: f.url }))
-    };
-    res.json(result);
+    invalidateCache('getActivities');
+    res.json({ ok: true });
   } catch (error) {
+    console.error('PUT /api/activities/:id error:', error);
     res.status(500).json({ error: error.message });
   }
 });
