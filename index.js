@@ -24,6 +24,15 @@ if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
+// 🛡️ Manejadores globales: registrar cualquier error no capturado en vez de
+// morir en silencio (causa de respuestas vacías / ERR_EMPTY_RESPONSE en el cliente).
+process.on('uncaughtException', (err) => {
+  console.error('💥 uncaughtException:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('💥 unhandledRejection:', reason);
+});
+
 // 2️⃣ Crear app
 const app = express();
 // Private Network Access (Chrome/Edge 130+): autorizar peticiones desde un origen
@@ -1618,6 +1627,7 @@ app.post("/api/activities", requireAuth, async (req, res) => {
 // 📋 PUT actualizar actividad
 app.put("/api/activities/:id", requireAuth, async (req, res) => {
   const { description, subDescription, dueDate, priority, status, completedBy, completedAt, files } = req.body;
+  console.log(`📥 PUT /api/activities/${req.params.id} → status=${status}, completedBy=${completedBy}, completedAt=${completedAt}, dueDate=${dueDate}, hasFiles=${Array.isArray(files)}`);
   try {
     // Actualizar actividad con los campos incluyendo completedBy y completedAt
     if (status === 'Completed') {
@@ -3313,6 +3323,7 @@ async function syncFallbackFileToDb() {
 
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`✅ TaxControl-Api escuchando en puerto ${PORT}`);
+  console.log('🏷️ build marker: activities-put-diag-v2');
 
   // Initialize tables with graceful error handling — don't crash the server
   try {
