@@ -1580,10 +1580,10 @@ app.post("/api/documents", requireAuth, async (req, res) => {
 });
 
 // 📄 PUT actualizar documento
-app.put("/api/documents/:id", requireAuth, async (req, res) => {
+const updateDocumentHandler = async (req, res) => {
   const d = req.body;
   const id = req.params.id;
-  console.log('📥 PUT /api/documents/:id recibido company:', d.company, 'state:', d);
+  console.log('📥 PUT/POST /api/documents/:id recibido company:', d.company, 'state:', d);
 
   if (!d.title || !d.authority || !d.dueDate) {
     return res.status(400).json({ error: "Campos requeridos: title, authority, dueDate" });
@@ -1719,7 +1719,11 @@ app.put("/api/documents/:id", requireAuth, async (req, res) => {
     console.error("PUT /api/documents error:", error);
     res.status(500).json({ error: error.message });
   }
-});
+};
+
+app.put("/api/documents/:id", requireAuth, updateDocumentHandler);
+// POST /update — workaround para proxies que bloquean PUT
+app.post("/api/documents/:id/update", requireAuth, updateDocumentHandler);
 
 // 📄 DELETE eliminar documento
 app.delete("/api/documents/:id", requireAuth, async (req, res) => {
@@ -2545,8 +2549,24 @@ app.post("/api/holidays/:id/delete", requireAuth, async (req, res) => {
 
 // 🤖 Endpoint de análisis con IA (Gemini)
 app.post("/api/analyze", requireAuth, async (req, res) => {
-  const { fileData, mimeType } = req.body;
-  if (!fileData) return res.status(400).json({ error: "fileData requerido" });
+  const { fileData, filePath, mimeType } = req.body;
+
+  let base64Data;
+  if (filePath) {
+    // Read file from disk — avoids sending large base64 bodies through the proxy
+    try {
+      const safeFileName = path.basename(filePath); // prevent path traversal
+      const fullPath = path.join(UPLOAD_DIR, safeFileName);
+      const fileBuffer = await fs.promises.readFile(fullPath);
+      base64Data = fileBuffer.toString('base64');
+    } catch (readErr) {
+      return res.status(404).json({ error: `Archivo no encontrado: ${readErr.message}` });
+    }
+  } else if (fileData) {
+    base64Data = fileData;
+  } else {
+    return res.status(400).json({ error: "fileData o filePath requerido" });
+  }
 
   try {
     const geminiRes = await fetch(
@@ -2560,7 +2580,7 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
               {
                 inline_data: {
                   mime_type: mimeType || "application/pdf",
-                  data: fileData
+                  data: base64Data
                 }
               },
               {
