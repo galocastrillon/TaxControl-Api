@@ -821,6 +821,47 @@ app.post("/api/auth/logout", async (req, res) => {
   res.json({ ok: true });
 });
 
+// 🔑 Cambiar contraseña
+app.post("/api/auth/change-password", requireAuth, async (req, res) => {
+  const { email, currentPassword, newPassword } = req.body;
+  if (!email || !currentPassword || !newPassword) {
+    return res.status(400).json({ error: "Email, contraseña actual y nueva contraseña requeridos" });
+  }
+  try {
+    const [rows] = await pool.query("SELECT * FROM users WHERE email = ?", [email]);
+    if (rows.length === 0) {
+      return res.status(401).json({ error: "Usuario no encontrado" });
+    }
+    const user = rows[0];
+    const currentHash = crypto.createHash("sha256").update(user.id + currentPassword).digest("hex");
+    if (currentHash !== user.password_hash) {
+      return res.status(401).json({ error: "Contraseña actual incorrecta" });
+    }
+    const newHash = crypto.createHash("sha256").update(user.id + newPassword).digest("hex");
+    await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [newHash, user.id]);
+    res.json({ ok: true, message: "Contraseña actualizada exitosamente" });
+  } catch (error) {
+    console.error("Change password error:", error);
+    res.status(500).json({ error: "Error interno del servidor" });
+  }
+});
+
+// 📸 Actualizar avatar (como base64 data URL)
+app.post("/api/auth/update-avatar", requireAuth, async (req, res) => {
+  const { avatarDataUrl } = req.body;
+  const user_id = req.user?.user_id;
+  if (!user_id || !avatarDataUrl) {
+    return res.status(400).json({ error: "User ID y avatar requeridos" });
+  }
+  try {
+    await pool.query("UPDATE users SET avatar_url = ? WHERE id = ?", [avatarDataUrl, user_id]);
+    res.json({ ok: true, avatarUrl: avatarDataUrl });
+  } catch (error) {
+    console.error("Update avatar error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Descargar archivos con nombre original (desde BD, fallback a disco legacy)
 app.get('/api/download/:filename', requireAuth, async (req, res) => {
   try {
