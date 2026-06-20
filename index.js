@@ -351,47 +351,110 @@ async function createCompany(name) {
 }
 
 
-// Servir archivos estáticos de uploads con MIME types correctos
-app.use('/api/files', express.static(UPLOAD_DIR, {
-  setHeaders: (res, filePath) => {
-    // PDF files
-    if (filePath.endsWith('.pdf')) {
-      res.set('Content-Type', 'application/pdf');
-      res.set('Content-Disposition', 'inline; filename*=UTF-8\'\'');
+// Servir archivos almacenados (visualización inline): primero desde la BD
+// (LONGBLOB), luego disco para archivos legacy. Sin auth para permitir <a href>.
+app.get('/api/files/:id', async (req, res) => {
+  try {
+    const stored = await loadStoredFile(req.params.id);
+    if (!stored) {
+      return res.status(404).json({ error: 'File not found' });
     }
-    // Otros tipos comunes
-    else if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) {
-      res.set('Content-Type', 'image/jpeg');
-    }
-    else if (filePath.endsWith('.png')) {
-      res.set('Content-Type', 'image/png');
-    }
-    else if (filePath.endsWith('.docx')) {
-      res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    }
-    else if (filePath.endsWith('.doc')) {
-      res.set('Content-Type', 'application/msword');
-    }
-    // Para cualquier otro tipo, dejar que express infiera
-  }
-}));
-
-// Configurar multer para carga de archivos
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, UPLOAD_DIR);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
-    cb(null, `${uniqueSuffix}-${file.originalname}`);
+    res.setHeader('Content-Type', stored.mimeType);
+    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(stored.fileName)}`);
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.send(stored.buffer);
+  } catch (error) {
+    console.error('[files] error sirviendo archivo:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
+// Configurar multer EN MEMORIA: los bytes del archivo se guardan en la base de
+// datos (LONGBLOB), NO en disco, para que sobrevivan a cualquier redespliegue del
+// contenedor (el disco /app/uploads es efímero sin volumen persistente).
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: MAX_FILE_SIZE }
-  // Sin fileFilter — se permite cualquier tipo de archivo
+  // Sin fileFilter — se permite cualquier tipo de archivo (PDF, imágenes, Word, Excel, etc.)
 });
+
+// Genera una clave de almacenamiento única conservando el nombre original (saneado)
+const makeStorageKey = (originalName) => {
+  const safeName = String(originalName || 'archivo')
+    .replace(/[\/\\]/g, '_')   // sin separadores de ruta
+    .replace(/\s+/g, '_')       // sin espacios
+    .slice(-180);               // acotar longitud (conserva la extensión al final)
+  return `${Date.now()}-${crypto.randomBytes(6).toString('hex')}-${safeName}`;
+};
+
+// Inferir Content-Type a partir de la extensión (para archivos legacy en disco)
+function guessMimeType(name) {
+  const n = String(name || '').toLowerCase();
+  if (n.endsWith('.pdf')) return 'application/pdf';
+  if (n.endsWith('.jpg') || n.endsWith('.jpeg')) return 'image/jpeg';
+  if (n.endsWith('.png')) return 'image/png';
+  if (n.endsWith('.gif')) return 'image/gif';
+  if (n.endsWith('.webp')) return 'image/webp';
+  if (n.endsWith('.docx')) return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (n.endsWith('.doc')) return 'application/msword';
+  if (n.endsWith('.xlsx')) return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  if (n.endsWith('.xls')) return 'application/vnd.ms-excel';
+  if (n.endsWith('.txt')) return 'text/plain; charset=utf-8';
+  return 'application/octet-stream';
+}
+
+// 🗄️ Tabla document_files: almacena los bytes de TODO archivo cargado (cualquier
+// formato). Fuente de verdad única y persistente, independiente del disco.
+let documentFilesTableReady = false;
+async function ensureDocumentFilesTable() {
+  if (documentFilesTableReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS document_files (
+      id VARCHAR(200) PRIMARY KEY,
+      file_name VARCHAR(255) NOT NULL,
+      mime_type VARCHAR(150) DEFAULT 'application/octet-stream',
+      data LONGBLOB NOT NULL,
+      size INT,
+      uploaded_by VARCHAR(50),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  documentFilesTableReady = true;
+}
+
+// Carga un archivo almacenado por su clave: primero desde la BD, luego (legacy) disco.
+async function loadStoredFile(key) {
+  if (!key) return null;
+  const cleanKey = path.basename(String(key)); // evita path traversal
+  // 1️⃣ Base de datos (fuente de verdad)
+  try {
+    await ensureDocumentFilesTable();
+    const [rows] = await pool.query(
+      "SELECT file_name, mime_type, data FROM document_files WHERE id = ? LIMIT 1",
+      [cleanKey]
+    );
+    if (rows.length > 0 && rows[0].data) {
+      return {
+        buffer: rows[0].data,
+        mimeType: rows[0].mime_type || guessMimeType(rows[0].file_name),
+        fileName: rows[0].file_name || cleanKey
+      };
+    }
+  } catch (e) {
+    console.warn('[loadStoredFile] error consultando BD:', e.message);
+  }
+  // 2️⃣ Fallback a disco (archivos antiguos aún presentes en el contenedor)
+  try {
+    const filePath = path.join(UPLOAD_DIR, cleanKey);
+    if (fs.existsSync(filePath)) {
+      const buffer = await fs.promises.readFile(filePath);
+      return { buffer, mimeType: guessMimeType(cleanKey), fileName: cleanKey };
+    }
+  } catch (e) {
+    console.warn('[loadStoredFile] error leyendo disco:', e.message);
+  }
+  return null;
+}
 
 // 3️⃣ Crear pool MariaDB (GLOBAL)
 const pool = mysql.createPool({
@@ -758,7 +821,7 @@ app.post("/api/auth/logout", async (req, res) => {
   res.json({ ok: true });
 });
 
-// Descargar archivos con nombre original
+// Descargar archivos con nombre original (desde BD, fallback a disco legacy)
 app.get('/api/download/:filename', requireAuth, async (req, res) => {
   try {
     const filename = req.params.filename;
@@ -767,51 +830,21 @@ app.get('/api/download/:filename', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Invalid filename' });
     }
 
-    const filePath = path.join(UPLOAD_DIR, filename);
+    const stored = await loadStoredFile(filename);
 
-    if (!fs.existsSync(filePath)) {
-      // Listar archivos disponibles para debugging
-      let availableFiles = [];
-      try {
-        availableFiles = fs.readdirSync(UPLOAD_DIR);
-      } catch (e) {
-        console.error(`[download] No se pudo leer UPLOAD_DIR=${UPLOAD_DIR}:`, e.message);
-      }
-      console.error(`[download] Archivo NO encontrado:`);
-      console.error(`  - Filename solicitado: ${filename}`);
-      console.error(`  - Path completo: ${filePath}`);
-      console.error(`  - UPLOAD_DIR: ${UPLOAD_DIR}`);
-      console.error(`  - Archivos disponibles en UPLOAD_DIR: ${availableFiles.length}`);
-      if (availableFiles.length > 0 && availableFiles.length < 20) {
-        console.error(`  - Lista: ${availableFiles.join(', ')}`);
-      }
-      // Mensaje informativo: probable causa = falta volumen persistente en Coolify
-      const hint = availableFiles.length === 0
-        ? 'El directorio de uploads está vacío - probablemente el contenedor fue redesplegado sin un volumen persistente configurado.'
-        : 'El archivo no existe en el servidor (posiblemente fue eliminado o el contenedor fue redesplegado).';
+    if (!stored) {
+      console.error(`[download] Archivo NO encontrado en BD ni en disco: ${filename}`);
       return res.status(404).json({
         error: 'File not found',
         filename,
-        hint,
-        availableFilesCount: availableFiles.length
+        hint: 'El archivo no existe en la base de datos ni en el servidor. Si es un documento antiguo, su archivo pudo perderse en un redespliegue previo (antes de migrar el almacenamiento a la base de datos).'
       });
     }
 
-    let contentType = 'application/octet-stream';
-    if (filename.endsWith('.pdf')) {
-      contentType = 'application/pdf';
-    } else if (filename.endsWith('.jpg') || filename.endsWith('.jpeg')) {
-      contentType = 'image/jpeg';
-    } else if (filename.endsWith('.png')) {
-      contentType = 'image/png';
-    } else if (filename.endsWith('.docx')) {
-      contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-    }
-
-    console.log(`[download] Sirviendo archivo: ${filename} (${contentType})`);
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', 'attachment');
-    res.sendFile(filePath);
+    console.log(`[download] Sirviendo archivo: ${filename} (${stored.mimeType})`);
+    res.setHeader('Content-Type', stored.mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(stored.fileName)}`);
+    res.send(stored.buffer);
   } catch (error) {
     console.error('[download] Error inesperado:', error);
     res.status(500).json({ error: error.message });
@@ -1069,18 +1102,31 @@ app.post("/api/users/:id/delete", requireAuth, async (req, res) => {
   }
 });
 
-// 📁 POST cargar archivo
+// 📁 POST cargar archivo — guarda los bytes en la BD (LONGBLOB), cualquier formato
 app.post("/api/upload", requireAuth, upload.single('file'), async (req, res) => {
   try {
-    if (!req.file) {
+    if (!req.file || !req.file.buffer) {
       return res.status(400).json({ error: 'No se ha cargado ningún archivo' });
     }
 
-    const fileUrl = `/api/files/${req.file.filename}`;
+    await ensureDocumentFilesTable();
+
+    const storageKey = makeStorageKey(req.file.originalname);
+    const mimeType = req.file.mimetype || guessMimeType(req.file.originalname);
+
+    await pool.query(
+      `INSERT INTO document_files (id, file_name, mime_type, data, size, uploaded_by)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [storageKey, req.file.originalname, mimeType, req.file.buffer, req.file.size, req.user?.user_id || null]
+    );
+
+    const fileUrl = `/api/files/${storageKey}`;
+    console.log(`[upload] ✅ Archivo guardado en BD: ${req.file.originalname} (${req.file.size} bytes, ${mimeType}) → ${storageKey}`);
     res.json({
       success: true,
       fileUrl,
       fileName: req.file.originalname,
+      mimeType,
       size: req.file.size
     });
   } catch (error) {
@@ -2552,16 +2598,16 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
   const { fileData, filePath, mimeType } = req.body;
 
   let base64Data;
+  let effectiveMime = mimeType;
   if (filePath) {
-    // Read file from disk — avoids sending large base64 bodies through the proxy
-    try {
-      const safeFileName = path.basename(filePath); // prevent path traversal
-      const fullPath = path.join(UPLOAD_DIR, safeFileName);
-      const fileBuffer = await fs.promises.readFile(fullPath);
-      base64Data = fileBuffer.toString('base64');
-    } catch (readErr) {
-      return res.status(404).json({ error: `Archivo no encontrado: ${readErr.message}` });
+    // Cargar el archivo desde el almacén (BD, fallback disco) — evita enviar
+    // cuerpos base64 enormes a través del proxy.
+    const stored = await loadStoredFile(filePath);
+    if (!stored) {
+      return res.status(404).json({ error: 'Archivo no encontrado para análisis' });
     }
+    base64Data = stored.buffer.toString('base64');
+    if (!effectiveMime) effectiveMime = stored.mimeType;
   } else if (fileData) {
     base64Data = fileData;
   } else {
@@ -2579,7 +2625,7 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
             parts: [
               {
                 inline_data: {
-                  mime_type: mimeType || "application/pdf",
+                  mime_type: effectiveMime || "application/pdf",
                   data: base64Data
                 }
               },
@@ -3436,6 +3482,44 @@ async function createActivityFilesTable() {
   }
 }
 
+// 📦 Migración: respalda en la BD cualquier archivo que aún esté en disco.
+// Idempotente: solo inserta los que faltan. Rescata los archivos presentes en el
+// contenedor en el momento del arranque, para que sobrevivan futuros redespliegues.
+async function migrateDiskFilesToDb() {
+  await ensureDocumentFilesTable();
+  let diskFiles = [];
+  try {
+    diskFiles = fs.readdirSync(UPLOAD_DIR);
+  } catch (e) {
+    console.log(`📦 [migrate-files] UPLOAD_DIR no legible (${e.message}); nada que migrar`);
+    return;
+  }
+  if (diskFiles.length === 0) {
+    console.log('📦 [migrate-files] No hay archivos en disco para migrar');
+    return;
+  }
+  let migrated = 0, skipped = 0, failed = 0;
+  for (const fname of diskFiles) {
+    try {
+      const fp = path.join(UPLOAD_DIR, fname);
+      const stat = fs.statSync(fp);
+      if (!stat.isFile()) continue;
+      const [exists] = await pool.query("SELECT id FROM document_files WHERE id = ? LIMIT 1", [fname]);
+      if (exists.length > 0) { skipped++; continue; }
+      const buffer = await fs.promises.readFile(fp);
+      await pool.query(
+        `INSERT INTO document_files (id, file_name, mime_type, data, size) VALUES (?, ?, ?, ?, ?)`,
+        [fname, fname, guessMimeType(fname), buffer, stat.size]
+      );
+      migrated++;
+    } catch (e) {
+      failed++;
+      console.warn(`📦 [migrate-files] Error con ${fname}:`, e.message);
+    }
+  }
+  console.log(`📦 [migrate-files] ✅ Migrados ${migrated} archivos disco→BD (omitidos ${skipped} ya existentes, ${failed} fallidos)`);
+}
+
 // 🗓️ Flag para no re-verificar la tabla en cada request (se resetea solo al reinicio)
 let holidaysTableReady = false;
 let ensuringHolidaysTable = null; // Promise compartida para evitar múltiples ejecuciones concurrentes
@@ -3712,6 +3796,19 @@ app.listen(PORT, '0.0.0.0', async () => {
   }
 
   try {
+    await ensureDocumentFilesTable();
+    console.log('✅ Tabla document_files verificada/creada (data=LONGBLOB)');
+  } catch (err) {
+    console.warn('⚠️ ensureDocumentFilesTable failed (non-critical):', err.message);
+  }
+
+  try {
+    await migrateDiskFilesToDb();
+  } catch (err) {
+    console.warn('⚠️ migrateDiskFilesToDb failed (non-critical):', err.message);
+  }
+
+  try {
     await createHolidaysTable();
   } catch (err) {
     console.warn('⚠️ createHolidaysTable failed (non-critical):', err.message);
@@ -3755,9 +3852,9 @@ app.listen(PORT, '0.0.0.0', async () => {
   }
 });
 
-// 📦 Verifica salud del almacenamiento de archivos al inicio
-// Detecta si hay referencias en BD a archivos que ya no existen en disco
-// (típicamente por contenedor sin volumen persistente configurado).
+// 📦 Verifica salud del almacenamiento de archivos al inicio.
+// Un archivo se considera presente si está en la BD (document_files) o en disco.
+// Reporta documentos cuyo archivo ya no existe en NINGUNO de los dos (pérdida real).
 async function checkUploadStorageHealth() {
   console.log(`📦 [storage-check] UPLOAD_DIR=${UPLOAD_DIR}`);
   let diskFiles = [];
@@ -3765,11 +3862,15 @@ async function checkUploadStorageHealth() {
     diskFiles = fs.readdirSync(UPLOAD_DIR);
     console.log(`📦 [storage-check] Archivos en disco: ${diskFiles.length}`);
   } catch (e) {
-    console.error(`📦 [storage-check] ❌ No se pudo leer UPLOAD_DIR:`, e.message);
-    return;
+    console.warn(`📦 [storage-check] UPLOAD_DIR no legible (esperado si todo está en BD):`, e.message);
   }
 
   try {
+    await ensureDocumentFilesTable();
+    const [dbFiles] = await pool.query("SELECT id FROM document_files");
+    const dbIds = new Set(dbFiles.map(r => r.id));
+    console.log(`📦 [storage-check] Archivos en BD (document_files): ${dbIds.size}`);
+
     const [docsWithFiles] = await pool.query(
       "SELECT id, file_url FROM documents WHERE file_url IS NOT NULL AND file_url != ''"
     );
@@ -3778,23 +3879,28 @@ async function checkUploadStorageHealth() {
       return;
     }
 
-    let missing = 0;
+    let missing = 0, inDb = 0, inDisk = 0, inlineBase64 = 0;
     const missingExamples = [];
     for (const doc of docsWithFiles) {
+      // Documentos antiguos con base64 incrustado en file_url: ya son durables
+      if (doc.file_url.startsWith('data:')) { inlineBase64++; continue; }
       const filename = doc.file_url.split('/').pop();
-      if (filename && !diskFiles.includes(filename)) {
+      if (!filename) continue;
+      if (dbIds.has(filename)) { inDb++; }
+      else if (diskFiles.includes(filename)) { inDisk++; }
+      else {
         missing++;
-        if (missingExamples.length < 3) missingExamples.push({ docId: doc.id, filename });
+        if (missingExamples.length < 5) missingExamples.push({ docId: doc.id, filename });
       }
     }
 
+    console.log(`📦 [storage-check] Resumen: ${inDb} en BD, ${inDisk} solo en disco, ${inlineBase64} base64 incrustado`);
     if (missing === 0) {
-      console.log(`📦 [storage-check] ✅ Todos los archivos en BD existen en disco (${docsWithFiles.length} documentos)`);
+      console.log(`📦 [storage-check] ✅ Todos los documentos tienen su archivo disponible`);
     } else {
-      console.warn(`📦 [storage-check] ⚠️ ${missing}/${docsWithFiles.length} archivos referenciados en BD NO existen en disco`);
+      console.warn(`📦 [storage-check] ⚠️ ${missing}/${docsWithFiles.length} documentos con archivo PERDIDO (ni en BD ni en disco)`);
       console.warn(`📦 [storage-check] Ejemplos:`, missingExamples);
-      console.warn(`📦 [storage-check] 💡 Probable causa: contenedor sin volumen persistente para ${UPLOAD_DIR}`);
-      console.warn(`📦 [storage-check] 💡 Solución: configurar volumen persistente en Coolify para ${UPLOAD_DIR}`);
+      console.warn(`📦 [storage-check] 💡 Estos archivos se perdieron en un redespliegue previo, antes de migrar a almacenamiento en BD. Los nuevos cargados ya quedan a salvo en la BD.`);
     }
   } catch (err) {
     console.error(`📦 [storage-check] Error consultando BD:`, err.message);

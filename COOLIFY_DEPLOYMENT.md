@@ -1,5 +1,18 @@
 # 🚀 Guía de Despliegue en Coolify - Tax Control API
 
+> ⚠️ **ACTUALIZACIÓN (2026-06-20): almacenamiento de archivos migrado a la base de datos.**
+> Los archivos de documentos (de cualquier formato) ahora se guardan como bytes en la
+> tabla `document_files` (LONGBLOB) dentro de MariaDB, NO en disco. Esto los hace
+> persistentes ante cualquier redespliegue del contenedor, **sin depender de un volumen**.
+> - La subida sigue siendo por `multipart` (`POST /api/upload`) para no saturar el proxy.
+> - `GET /api/files/:id` y `GET /api/download/:id` sirven desde la BD (fallback a disco
+>   para archivos legacy que aún estén presentes).
+> - Al arrancar, `migrateDiskFilesToDb()` respalda automáticamente en la BD cualquier
+>   archivo que todavía exista en disco.
+> - El volumen persistente para `/app/uploads` ya **no es obligatorio** (solo ayuda a
+>   rescatar archivos legacy si el contenedor se reinicia antes de la primera migración).
+> La sección histórica de abajo se conserva como referencia del diseño anterior.
+
 ## 📋 Resumen del Problema Resuelto
 
 **Problema:** Los documentos cargados no se desplegaban correctamente en Coolify.
