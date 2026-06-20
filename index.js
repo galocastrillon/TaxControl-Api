@@ -1030,6 +1030,39 @@ app.delete("/api/users/:id", requireAuth, async (req, res) => {
   }
 });
 
+// 👥 POST /update — workaround para proxy que bloquea PUT
+app.post("/api/users/:id/update", requireAuth, async (req, res) => {
+  const { name, email, role, password } = req.body;
+  try {
+    if (password) {
+      const hash = crypto.createHash("sha256").update(req.params.id + password).digest("hex");
+      await pool.query(
+        "UPDATE users SET name=?, email=?, role=?, password_hash=? WHERE id=?",
+        [name, email, role, hash, req.params.id]
+      );
+    } else {
+      await pool.query(
+        "UPDATE users SET name=?, email=?, role=? WHERE id=?",
+        [name, email, role, req.params.id]
+      );
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 👥 POST /delete — workaround para proxy que bloquea DELETE
+app.post("/api/users/:id/delete", requireAuth, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM sessions WHERE user_id = ?", [req.params.id]);
+    await pool.query("DELETE FROM users WHERE id = ?", [req.params.id]);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 📁 POST cargar archivo
 app.post("/api/upload", requireAuth, upload.single('file'), async (req, res) => {
   try {
@@ -2460,6 +2493,46 @@ app.delete("/api/holidays/:id", requireAuth, async (req, res) => {
       }
       return res.status(404).json({ error: "Feriado no encontrado" });
     }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🗓️ POST /update — workaround para proxy que bloquea PUT
+app.post("/api/holidays/:id/update", requireAuth, async (req, res) => {
+  const { officialDate, calendarDate, name, type } = req.body;
+  const official = officialDate || req.body.date;
+  const calendar = calendarDate || (official ? calculateCalendarDate(official) : req.body.date);
+
+  if (req.user.role !== 'Admin') {
+    return res.status(403).json({ error: "Solo Admins pueden editar feriados" });
+  }
+
+  try {
+    await ensureHolidaysTable();
+    await pool.query(
+      `UPDATE holidays SET official_date=?, holiday_date=?, name=?, holiday_type=?, updated_by=? WHERE id=?`,
+      [official, calendar, name, type, req.user.user_id, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: "Ya existe un feriado en esa fecha calendario" });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🗓️ POST /delete — workaround para proxy que bloquea DELETE
+app.post("/api/holidays/:id/delete", requireAuth, async (req, res) => {
+  if (req.user.role !== 'Admin') {
+    return res.status(403).json({ error: "Solo Admins pueden eliminar feriados" });
+  }
+
+  try {
+    await ensureHolidaysTable();
+    await pool.query("DELETE FROM holidays WHERE id = ?", [req.params.id]);
+    res.json({ ok: true });
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
