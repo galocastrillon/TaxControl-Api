@@ -2676,18 +2676,18 @@ const getEmailTransporter = async () => {
     return nodemailer.createTransport({
       host: config.host,
       port: port,
-      secure: isSecure && port === 465,
-      requireTLS: !isSecure || port === 587,
-      connectionTimeout: 5000,  // 5s para establecer conexión TCP
-      greetingTimeout: 5000,    // 5s para recibir saludo SMTP
-      socketTimeout: 10000,     // 10s para operaciones de socket
+      secure: false,       // NO SSL implícito — el servidor OWA usa STARTTLS
+      requireTLS: true,    // Exigir STARTTLS después de conectar
+      connectionTimeout: 5000,
+      greetingTimeout: 5000,
+      socketTimeout: 10000,
       auth: {
         user: config.user,
         pass: config.password
       },
       tls: {
         rejectUnauthorized: false,
-        minVersion: "TLSv1.2"
+        minVersion: "TLSv1"
       }
     });
   } catch (error) {
