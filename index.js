@@ -854,6 +854,13 @@ app.post("/api/auth/update-avatar", requireAuth, async (req, res) => {
     return res.status(400).json({ error: "User ID y avatar requeridos" });
   }
   try {
+    // Asegurar que la columna avatar_url es LONGTEXT (soporta base64 grandes)
+    try {
+      await pool.query(`ALTER TABLE users MODIFY COLUMN avatar_url LONGTEXT`);
+    } catch (e) {
+      // Si ya es LONGTEXT, va a fallar, pero eso está bien
+    }
+
     await pool.query("UPDATE users SET avatar_url = ? WHERE id = ?", [avatarDataUrl, user_id]);
     res.json({ ok: true, avatarUrl: avatarDataUrl });
   } catch (error) {
