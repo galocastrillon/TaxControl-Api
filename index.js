@@ -848,6 +848,100 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
   res.json({ user: req.user });
 });
 
+// 🔑 POST solicitar reset de contraseña (sin autenticación)
+app.post("/api/auth/forgot-password", async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: "Email requerido" });
+  try {
+    const [rows] = await pool.query("SELECT id, name FROM users WHERE email = ?", [email]);
+    // Respuesta genérica siempre (no revelar si el email existe)
+    if (rows.length === 0) {
+      return res.json({ ok: true, message: "Si el email existe, recibirás un enlace de recuperación." });
+    }
+    const user = rows[0];
+    const token = crypto.randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hora
+
+    // Guardar token en BD (reutiliza tabla password_resets si existe, si no la crea)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS password_resets (
+        token VARCHAR(64) PRIMARY KEY,
+        user_id VARCHAR(50) NOT NULL,
+        expires_at DATETIME NOT NULL,
+        created_at DATETIME DEFAULT NOW()
+      )
+    `);
+    // Eliminar tokens previos del usuario y guardar el nuevo
+    await pool.query("DELETE FROM password_resets WHERE user_id = ?", [user.id]);
+    await pool.query(
+      "INSERT INTO password_resets (token, user_id, expires_at) VALUES (?, ?, ?)",
+      [token, user.id, expiresAt]
+    );
+
+    // Enviar email con el link
+    const appUrl = process.env.APP_URL || "http://192.168.60.109/taxcontrol";
+    const resetLink = `${appUrl}/#/reset-password?token=${token}`;
+    try {
+      const transporter = await getEmailTransporter();
+      const config = await getSmtpConfig();
+      await transporter.sendMail({
+        from: `"${config.from_name}" <${config.from_email}>`,
+        to: email,
+        subject: "🔑 Recuperación de contraseña | Tax Control",
+        html: `
+          <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:8px;padding:24px;">
+            <h2 style="color:#204070;">🔑 Recuperación de Contraseña</h2>
+            <p>Hola <strong>${user.name}</strong>,</p>
+            <p>Recibimos una solicitud para restablecer tu contraseña en Tax Control.</p>
+            <p style="margin:28px 0;">
+              <a href="${resetLink}"
+                 style="background:#204070;color:white;padding:12px 28px;text-decoration:none;border-radius:6px;display:inline-block;font-weight:bold;">
+                Restablecer Contraseña
+              </a>
+            </p>
+            <p style="color:#666;font-size:13px;">Este enlace es válido por <strong>1 hora</strong>. Si no solicitaste este cambio, ignora este email.</p>
+            <hr style="border:none;border-top:1px solid #eee;margin:24px 0;">
+            <p style="color:#999;font-size:11px;">Tax Control — ECSA</p>
+          </div>
+        `
+      });
+    } catch (mailErr) {
+      console.error("Error enviando email de reset:", mailErr.message);
+    }
+
+    res.json({ ok: true, message: "Si el email existe, recibirás un enlace de recuperación." });
+  } catch (error) {
+    console.error("forgot-password error:", error);
+    res.status(500).json({ error: "Error interno" });
+  }
+});
+
+// 🔑 POST restablecer contraseña con token (sin autenticación)
+app.post("/api/auth/reset-password", async (req, res) => {
+  const { token, password } = req.body;
+  if (!token || !password) return res.status(400).json({ error: "Token y contraseña requeridos" });
+  if (password.length < 6) return res.status(400).json({ error: "La contraseña debe tener al menos 6 caracteres" });
+  try {
+    const [rows] = await pool.query(
+      "SELECT * FROM password_resets WHERE token = ? AND expires_at > NOW()",
+      [token]
+    );
+    if (rows.length === 0) return res.status(400).json({ error: "Token inválido o expirado" });
+
+    const userId = rows[0].user_id;
+    const hash = crypto.createHash("sha256").update(userId + password).digest("hex");
+    await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [hash, userId]);
+    await pool.query("DELETE FROM password_resets WHERE user_id = ?", [userId]);
+    // Invalidar todas las sesiones activas del usuario
+    await pool.query("DELETE FROM sessions WHERE user_id = ?", [userId]);
+
+    res.json({ ok: true, message: "Contraseña actualizada correctamente" });
+  } catch (error) {
+    console.error("reset-password error:", error);
+    res.status(500).json({ error: "Error interno" });
+  }
+});
+
 // 👥 GET todos los usuarios
 app.get("/api/users", requireAuth, async (req, res) => {
   try {
