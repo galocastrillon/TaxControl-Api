@@ -2678,9 +2678,9 @@ const getEmailTransporter = async () => {
       port: port,
       secure: isSecure && port === 465,
       requireTLS: !isSecure || port === 587,
-      connectionTimeout: 10000,  // 10s para establecer conexión TCP
-      greetingTimeout: 10000,    // 10s para recibir saludo SMTP
-      socketTimeout: 20000,      // 20s para operaciones de socket
+      connectionTimeout: 5000,  // 5s para establecer conexión TCP
+      greetingTimeout: 5000,    // 5s para recibir saludo SMTP
+      socketTimeout: 10000,     // 10s para operaciones de socket
       auth: {
         user: config.user,
         pass: config.password
