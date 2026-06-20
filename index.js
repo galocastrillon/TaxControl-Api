@@ -907,9 +907,15 @@ app.post("/api/auth/forgot-password", async (req, res) => {
       });
     } catch (mailErr) {
       console.error("Error enviando email de reset:", mailErr.message);
+      // El token ya está guardado — devolver el link directamente si el SMTP falla
+      // para que el admin pueda enviarlo manualmente o el usuario lo use de inmediato
+      return res.status(503).json({
+        error: `No se pudo enviar el email: ${mailErr.message}`,
+        resetLink // devuelve el link para que el admin pueda compartirlo manualmente
+      });
     }
 
-    res.json({ ok: true, message: "Si el email existe, recibirás un enlace de recuperación." });
+    res.json({ ok: true, message: "Email enviado. Revisa tu bandeja de entrada (y carpeta de spam)." });
   } catch (error) {
     console.error("forgot-password error:", error);
     res.status(500).json({ error: "Error interno" });
