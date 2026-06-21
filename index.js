@@ -10,7 +10,13 @@ import path from "path";
 import { fileURLToPath } from "url";
 import multer from "multer";
 import compression from "compression";
+import dns from "node:dns";
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
+
+// 🌐 Forzar resolución DNS IPv4 primero. Causa #1 de "fetch failed" en
+// contenedores: Node (undici) intenta IPv6 y la red IPv6 del host/Docker
+// está rota o sin ruta de salida → el fetch a Google falla sin código claro.
+dns.setDefaultResultOrder("ipv4first");
 
 // 1️⃣ Cargar variables de entorno
 dotenv.config();
@@ -2730,11 +2736,20 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
     }
 
   } catch (error) {
+    // undici esconde la causa real (ENOTFOUND, ECONNREFUSED, ETIMEDOUT,
+    // certificado TLS, etc.) en error.cause — esto es lo que de verdad importa.
     console.error("[analyze] ❌ Error:", {
       message: error.message,
       name: error.name,
       code: error.code,
-      stack: error.stack
+      cause: error.cause ? {
+        message: error.cause.message,
+        code: error.cause.code,
+        errno: error.cause.errno,
+        syscall: error.cause.syscall,
+        hostname: error.cause.hostname,
+        address: error.cause.address
+      } : undefined
     });
 
     // Si es timeout o conectividad a Google, permitir continuar manualmente
@@ -3348,6 +3363,55 @@ app.get("/api/list-models", async (req, res) => {
     });
     res.status(500).json({ error: error.message });
   }
+});
+
+// 🔬 Diagnóstico de conectividad a Google — aísla en qué capa falla:
+// DNS (resolución del nombre) → TCP/TLS (conexión) → HTTP (respuesta).
+app.get("/api/diag/gemini", async (req, res) => {
+  const host = "generativelanguage.googleapis.com";
+  const result = { host, dnsV4: null, dnsV6: null, https: null };
+
+  // 1) Resolución DNS IPv4
+  try {
+    const v4 = await dns.promises.resolve4(host);
+    result.dnsV4 = { ok: true, addresses: v4 };
+  } catch (e) {
+    result.dnsV4 = { ok: false, code: e.code, message: e.message };
+  }
+
+  // 2) Resolución DNS IPv6
+  try {
+    const v6 = await dns.promises.resolve6(host);
+    result.dnsV6 = { ok: true, addresses: v6 };
+  } catch (e) {
+    result.dnsV6 = { ok: false, code: e.code, message: e.message };
+  }
+
+  // 3) Conexión HTTPS real (handshake TLS + respuesta HTTP)
+  try {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 15000);
+    const r = await fetch(`https://${host}/v1beta/models?key=invalid-test-key`, {
+      signal: controller.signal
+    });
+    clearTimeout(t);
+    // Esperamos 400/403 (key inválida) — eso significa que LLEGAMOS a Google.
+    result.https = { ok: true, status: r.status, reachable: true };
+  } catch (e) {
+    result.https = {
+      ok: false,
+      reachable: false,
+      message: e.message,
+      cause: e.cause ? {
+        code: e.cause.code,
+        errno: e.cause.errno,
+        syscall: e.cause.syscall,
+        address: e.cause.address
+      } : undefined
+    };
+  }
+
+  res.json(result);
 });
 
 // 📅 Programar notificaciones diarias de resumen
