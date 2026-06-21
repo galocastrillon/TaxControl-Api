@@ -3345,6 +3345,17 @@ app.post("/api/notifications/new-document", requireAuth, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// 🔑 Entregar la API Key de Gemini al frontend (solo usuarios autenticados).
+// Necesario porque el servidor (red Coolify) no tiene salida a Google, pero el
+// navegador del usuario SÍ. El análisis de IA se ejecuta en el cliente.
+// No se hornea en el bundle estático: se pide en runtime tras login.
+app.get("/api/config/ai-key", requireAuth, (req, res) => {
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json({ error: 'GEMINI_API_KEY no configurada en el servidor' });
+  }
+  res.json({ apiKey: process.env.GEMINI_API_KEY });
+});
+
 // 🔍 Listar modelos Gemini disponibles (usando Google SDK)
 app.get("/api/list-models", async (req, res) => {
   if (!process.env.GEMINI_API_KEY) {
