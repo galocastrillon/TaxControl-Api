@@ -10,9 +10,13 @@ import path from "path";
 import { fileURLToPath } from "url";
 import multer from "multer";
 import compression from "compression";
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 
 // 1️⃣ Cargar variables de entorno
 dotenv.config();
+
+// 🤖 Inicializar Google Generative AI
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2600,8 +2604,6 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
   let base64Data;
   let effectiveMime = mimeType;
   if (filePath) {
-    // Cargar el archivo desde el almacén (BD, fallback disco) — evita enviar
-    // cuerpos base64 enormes a través del proxy.
     const stored = await loadStoredFile(filePath);
     if (!stored) {
       return res.status(404).json({ error: 'Archivo no encontrado para análisis' });
@@ -2615,41 +2617,37 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
   }
 
   try {
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              {
-                inline_data: {
-                  mime_type: effectiveMime || "application/pdf",
-                  data: base64Data
-                }
-              },
-              {
-                text: `Analiza este documento y responde SOLO con JSON válido sin markdown. EXTRAE: trarniteNumber=número interno de trámite/expediente (ej: "Trámite No."); documentNumber=número oficial del documento emitido (ej: "Resolución No.", "Oficio No.", "Notificación No.", "Auto No.", "Providencia No.") — búscalo en encabezado, pie y cuerpo. Si solo hay un número ponlo en trarniteNumber y deja documentNumber vacío. company=empresa del documento (busca siglas o nombre completo, ej: "ECSA", "EXSA", "HCSA", "PCSA", "MMSA" u otros):\n{"authority":"","department":"","company":"","notificationDate":"YYYY-MM-DD","emissionDate":"YYYY-MM-DD","daysLimit":10,"dayType":"Días hábiles","trarniteNumber":"","documentNumber":"","title":"","summaryEs":"resumen breve en español","summaryCn":"简短摘要","activities":[""]}`
-              }
-            ]
-          }],
-          generationConfig: {
-            temperature: 0.1,
-            maxOutputTokens: 8192,
-            responseMimeType: "application/json"
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+    const response = await model.generateContent({
+      contents: [{
+        parts: [
+          {
+            inline_data: {
+              mimeType: effectiveMime || "application/pdf",
+              data: base64Data
+            }
+          },
+          {
+            text: `Analiza este documento y responde SOLO con JSON válido sin markdown. EXTRAE: trarniteNumber=número interno de trámite/expediente (ej: "Trámite No."); documentNumber=número oficial del documento emitido (ej: "Resolución No.", "Oficio No.", "Notificación No.", "Auto No.", "Providencia No.") — búscalo en encabezado, pie y cuerpo. Si solo hay un número ponlo en trarniteNumber y deja documentNumber vacío. company=empresa del documento (busca siglas o nombre completo, ej: "ECSA", "EXSA", "HCSA", "PCSA", "MMSA" u otros):\n{"authority":"","department":"","company":"","notificationDate":"YYYY-MM-DD","emissionDate":"YYYY-MM-DD","daysLimit":10,"dayType":"Días hábiles","trarniteNumber":"","documentNumber":"","title":"","summaryEs":"resumen breve en español","summaryCn":"简短摘要","activities":[""]}`
           }
-        })
-      }
-    );
+        ]
+      }],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 8192,
+        responseMimeType: "application/json"
+      },
+      safetySettings: [
+        { category: HarmCategory.HARM_CATEGORY_UNSPECIFIED, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE }
+      ]
+    });
 
-    if (!geminiRes.ok) {
-      const errData = await geminiRes.json();
-      throw new Error(errData.error?.message || "Error en Gemini API");
-    }
-
-    const geminiData = await geminiRes.json();
-    const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+    const text = response.response?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
 
     const clean = text
       .replace(/```json/gi, '')
@@ -2664,7 +2662,7 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
     res.json(parsed);
 
   } catch (error) {
-    console.error("Analyze error:", error);
+    console.error("[analyze] Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -3251,11 +3249,13 @@ app.post("/api/notifications/new-document", requireAuth, async (req, res) => {
   }
 });
 app.get("/api/list-models", async (req, res) => {
-  const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models?key=${process.env.GEMINI_API_KEY}`
-  );
-  const data = await r.json();
-  res.json(data.models?.map(m => m.name) || data);
+  try {
+    const response = await genAI.listModels();
+    res.json(response.models?.map(m => m.name) || response);
+  } catch (error) {
+    console.error("[list-models] Error:", error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // 📅 Programar notificaciones diarias de resumen
