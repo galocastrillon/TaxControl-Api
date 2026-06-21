@@ -3304,12 +3304,18 @@ app.post("/api/notifications/new-document", requireAuth, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// 🔍 Listar modelos Gemini disponibles (usando Google SDK)
 app.get("/api/list-models", async (req, res) => {
-  const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models?key=${process.env.GEMINI_API_KEY}`
-  );
-  const data = await r.json();
-  res.json(data.models?.map(m => m.name) || data);
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json({ error: 'GEMINI_API_KEY no configurada' });
+  }
+  try {
+    const models = await genAI.listModels();
+    res.json({ models: models });
+  } catch (error) {
+    console.error("[list-models] Error:", error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // 📅 Programar notificaciones diarias de resumen
