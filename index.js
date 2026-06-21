@@ -10,9 +10,16 @@ import path from "path";
 import { fileURLToPath } from "url";
 import multer from "multer";
 import compression from "compression";
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 
 // 1️⃣ Cargar variables de entorno
 dotenv.config();
+
+// 🤖 Inicializar Google Generative AI
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+if (!process.env.GEMINI_API_KEY) {
+  console.warn('⚠️ GEMINI_API_KEY no está configurada. El análisis de IA no funcionará.');
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2641,63 +2648,62 @@ app.post("/api/holidays/:id/delete", requireAuth, async (req, res) => {
   }
 });
 
-// 🤖 Endpoint de análisis con IA (Gemini)
+// 🤖 Endpoint de análisis con IA (Gemini) — usando Google Generative AI SDK
 app.post("/api/analyze", requireAuth, async (req, res) => {
   const { fileData, filePath, mimeType } = req.body;
 
-  let base64Data;
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json({ error: 'GEMINI_API_KEY no configurada. Análisis de IA no disponible.' });
+  }
+
+  let fileBuffer;
   let effectiveMime = mimeType;
   if (filePath) {
-    // Cargar el archivo desde el almacén (BD, fallback disco) — evita enviar
-    // cuerpos base64 enormes a través del proxy.
+    // Cargar el archivo desde el almacén (BD, fallback disco)
     const stored = await loadStoredFile(filePath);
     if (!stored) {
       return res.status(404).json({ error: 'Archivo no encontrado para análisis' });
     }
-    base64Data = stored.buffer.toString('base64');
+    fileBuffer = stored.buffer;
     if (!effectiveMime) effectiveMime = stored.mimeType;
   } else if (fileData) {
-    base64Data = fileData;
+    // fileData es base64 string
+    fileBuffer = Buffer.from(fileData, 'base64');
   } else {
     return res.status(400).json({ error: "fileData o filePath requerido" });
   }
 
   try {
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              {
-                inline_data: {
-                  mime_type: effectiveMime || "application/pdf",
-                  data: base64Data
-                }
-              },
-              {
-                text: `Analiza este documento y responde SOLO con JSON válido sin markdown. EXTRAE: trarniteNumber=número interno de trámite/expediente (ej: "Trámite No."); documentNumber=número oficial del documento emitido (ej: "Resolución No.", "Oficio No.", "Notificación No.", "Auto No.", "Providencia No.") — búscalo en encabezado, pie y cuerpo. Si solo hay un número ponlo en trarniteNumber y deja documentNumber vacío. company=empresa del documento (busca siglas o nombre completo, ej: "ECSA", "EXSA", "HCSA", "PCSA", "MMSA" u otros):\n{"authority":"","department":"","company":"","notificationDate":"YYYY-MM-DD","emissionDate":"YYYY-MM-DD","daysLimit":10,"dayType":"Días hábiles","trarniteNumber":"","documentNumber":"","title":"","summaryEs":"resumen breve en español","summaryCn":"简短摘要","activities":[""]}`
-              }
-            ]
-          }],
-          generationConfig: {
-            temperature: 0.1,
-            maxOutputTokens: 8192,
-            responseMimeType: "application/json"
-          }
-        })
+    // Usar la SDK de Google Generative AI (con mejor manejo de errores, reintentos, etc)
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+    const prompt = `Analiza este documento y responde SOLO con JSON válido sin markdown. EXTRAE: trarniteNumber=número interno de trámite/expediente (ej: "Trámite No."); documentNumber=número oficial del documento emitido (ej: "Resolución No.", "Oficio No.", "Notificación No.", "Auto No.", "Providencia No.") — búscalo en encabezado, pie y cuerpo. Si solo hay un número ponlo en trarniteNumber y deja documentNumber vacío. company=empresa del documento (busca siglas o nombre completo, ej: "ECSA", "EXSA", "HCSA", "PCSA", "MMSA" u otros):\n{"authority":"","department":"","company":"","notificationDate":"YYYY-MM-DD","emissionDate":"YYYY-MM-DD","daysLimit":10,"dayType":"Días hábiles","trarniteNumber":"","documentNumber":"","title":"","summaryEs":"resumen breve en español","summaryCn":"简短摘要","activities":[""]}`;
+
+    const imagePart = {
+      inlineData: {
+        data: fileBuffer.toString('base64'),
+        mimeType: effectiveMime || "application/pdf"
       }
-    );
+    };
 
-    if (!geminiRes.ok) {
-      const errData = await geminiRes.json();
-      throw new Error(errData.error?.message || "Error en Gemini API");
-    }
+    console.log(`[analyze] Enviando ${Buffer.byteLength(fileBuffer)} bytes a Gemini (${effectiveMime})`);
 
-    const geminiData = await geminiRes.json();
-    const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+    const result = await model.generateContent({
+      contents: [{ role: "user", parts: [imagePart, { text: prompt }] }],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 8192,
+        responseMimeType: "application/json"
+      },
+      safetySettings: [
+        { category: HarmCategory.HARM_CATEGORY_UNSPECIFIED, threshold: HarmBlockThreshold.BLOCK_NONE }
+      ]
+    });
+
+    const response = await result.response;
+    const text = response.text() || "{}";
+
+    console.log(`[analyze] Respuesta recibida (${text.length} chars)`);
 
     const clean = text
       .replace(/```json/gi, '')
@@ -2712,8 +2718,8 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
     res.json(parsed);
 
   } catch (error) {
-    console.error("Analyze error:", error);
-    res.status(500).json({ error: error.message });
+    console.error("[analyze] Error:", error.message || error);
+    res.status(500).json({ error: error.message || "Error al analizar el documento" });
   }
 });
 
