@@ -2688,37 +2688,63 @@ app.post("/api/analyze", requireAuth, async (req, res) => {
 
     console.log(`[analyze] Enviando ${Buffer.byteLength(fileBuffer)} bytes a Gemini (${effectiveMime})`);
 
-    const result = await model.generateContent({
-      contents: [{ role: "user", parts: [imagePart, { text: prompt }] }],
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 8192,
-        responseMimeType: "application/json"
-      },
-      safetySettings: [
-        { category: HarmCategory.HARM_CATEGORY_UNSPECIFIED, threshold: HarmBlockThreshold.BLOCK_NONE }
-      ]
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000); // 60s timeout
 
-    const response = await result.response;
-    const text = response.text() || "{}";
+    try {
+      const result = await model.generateContent({
+        contents: [{ role: "user", parts: [imagePart, { text: prompt }] }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 8192,
+          responseMimeType: "application/json"
+        },
+        safetySettings: [
+          { category: HarmCategory.HARM_CATEGORY_UNSPECIFIED, threshold: HarmBlockThreshold.BLOCK_NONE }
+        ]
+      });
 
-    console.log(`[analyze] Respuesta recibida (${text.length} chars)`);
+      clearTimeout(timeout);
+      console.log(`[analyze] generateContent() completado`);
 
-    const clean = text
-      .replace(/```json/gi, '')
-      .replace(/```/g, '')
-      .replace(/[\x00-\x1F\x7F]/g, ' ')
-      .trim();
+      const response = await result.response;
+      console.log(`[analyze] response obtenida`);
 
-    const jsonMatch = clean.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("No se encontró JSON válido en la respuesta");
+      const text = response.text() || "{}";
+      console.log(`[analyze] Respuesta recibida (${text.length} chars)`);
 
-    const parsed = JSON.parse(jsonMatch[0]);
-    res.json(parsed);
+      const clean = text
+        .replace(/```json/gi, '')
+        .replace(/```/g, '')
+        .replace(/[\x00-\x1F\x7F]/g, ' ')
+        .trim();
+
+      const jsonMatch = clean.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("No se encontró JSON válido en la respuesta");
+
+      const parsed = JSON.parse(jsonMatch[0]);
+      res.json(parsed);
+    } catch (innerError) {
+      clearTimeout(timeout);
+      throw innerError;
+    }
 
   } catch (error) {
-    console.error("[analyze] Error:", error.message || error);
+    console.error("[analyze] ❌ Error:", {
+      message: error.message,
+      name: error.name,
+      code: error.code,
+      stack: error.stack
+    });
+
+    // Si es timeout o conectividad a Google, permitir continuar manualmente
+    if (error.name === 'AbortError' || error.message?.includes('fetch')) {
+      return res.status(202).json({
+        warning: "Análisis con IA no disponible. Completa manualmente los campos.",
+        error: error.message
+      });
+    }
+
     res.status(500).json({ error: error.message || "Error al analizar el documento" });
   }
 });
@@ -3310,10 +3336,16 @@ app.get("/api/list-models", async (req, res) => {
     return res.status(503).json({ error: 'GEMINI_API_KEY no configurada' });
   }
   try {
+    console.log("[list-models] Pidiendo listModels() a Google...");
     const models = await genAI.listModels();
+    console.log(`[list-models] ✅ ${models.length} modelos obtenidos`);
     res.json({ models: models });
   } catch (error) {
-    console.error("[list-models] Error:", error.message);
+    console.error("[list-models] ❌ Error:", {
+      message: error.message,
+      name: error.name,
+      code: error.code
+    });
     res.status(500).json({ error: error.message });
   }
 });
