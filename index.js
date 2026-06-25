@@ -10,13 +10,22 @@ import path from "path";
 import { fileURLToPath } from "url";
 import multer from "multer";
 import compression from "compression";
+import dns from "node:dns";
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
+
+// 🌐 Forzar resolución DNS IPv4 primero. Causa #1 de "fetch failed" en
+// contenedores: Node (undici) intenta IPv6 y la red IPv6 del host/Docker
+// está rota o sin ruta de salida → el fetch a Google falla sin código claro.
+dns.setDefaultResultOrder("ipv4first");
 
 // 1️⃣ Cargar variables de entorno
 dotenv.config();
 
 // 🤖 Inicializar Google Generative AI
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+if (!process.env.GEMINI_API_KEY) {
+  console.warn('⚠️ GEMINI_API_KEY no está configurada. El análisis de IA no funcionará.');
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -129,7 +138,7 @@ const syncDocumentStatusFromActivities = async (docId, changedBy) => {
     try {
       const recipients = await getDocumentRecipients(docId);
       const doc = docRows[0];
-      const emailTemplate = getStatusChangeEmailContent(
+      const emailTemplate = await getStatusChangeEmailContent(
         doc.title, doc.trarnite_number, oldStatus, newStatus, changedBy, doc.authority
       );
       await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, docId, 'status_change');
@@ -472,6 +481,41 @@ const pool = mysql.createPool({
   enableKeepAlive: true
 });
 
+// 🌐 Cache de traducciones para evitar llamadas repetidas a Gemini
+const translationCache = new Map();
+
+// 🌐 Traducción automática de español a chino simplificado usando Gemini
+const translateToSimplifiedChinese = async (text) => {
+  if (!text) return text;
+
+  // Evitar traducir URLs, emails, números de trámite
+  if (text.match(/^[0-9\-\.@\/\:]+$/)) return text;
+
+  // Verificar cache
+  if (translationCache.has(text)) {
+    return translationCache.get(text);
+  }
+
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const response = await model.generateContent({
+      contents: [{
+        parts: [{
+          text: `Traduce el siguiente texto del español al chino simplificado. SOLO devuelve la traducción, sin explicaciones ni formato adicional:\n\n"${text}"`
+        }]
+      }],
+      generationConfig: { temperature: 0.1, maxOutputTokens: 500 }
+    });
+
+    const translated = response.response?.text?.().trim() || text;
+    translationCache.set(text, translated);
+    return translated;
+  } catch (error) {
+    console.warn(`[translateToSimplifiedChinese] Error traduciendo "${text}":`, error.message);
+    return text; // Fallback: devolver el texto original en español
+  }
+};
+
 // 🌐 Email Template Helper - Multi-language Support (Spanish + Simplified Chinese)
 const getWelcomeEmailContent = (name, email, password, role = "Operator") => {
   const roleDisplay = role || "Operator";
@@ -547,7 +591,15 @@ const getWelcomeEmailContent = (name, email, password, role = "Operator") => {
 };
 
 // 🌐 Status Change Notification Email Template (Bilingual)
-const getStatusChangeEmailContent = (documentTitle, tramiteNumber, oldStatus, newStatus, changedBy, authority) => {
+const getStatusChangeEmailContent = async (documentTitle, tramiteNumber, oldStatus, newStatus, changedBy, authority) => {
+  const [titleCn, oldStatusCn, newStatusCn, changedByCn, authorityCn] = await Promise.all([
+    translateToSimplifiedChinese(documentTitle),
+    translateToSimplifiedChinese(oldStatus),
+    translateToSimplifiedChinese(newStatus),
+    translateToSimplifiedChinese(changedBy),
+    translateToSimplifiedChinese(authority)
+  ]);
+
   return {
     subject: "📋 Documento Actualizado | 文档已更新 - Estado Cambió | 状态已更改",
     html: `
@@ -574,15 +626,15 @@ const getStatusChangeEmailContent = (documentTitle, tramiteNumber, oldStatus, ne
           <!-- CHINESE -->
           <div>
             <h2 style="color: #204070;">📋 文档已更新</h2>
-            <p>文档"<strong>${documentTitle}</strong>"（程序：${tramiteNumber}）的状态已更改。</p>
+            <p>文档"<strong>${titleCn}</strong>"（程序：${tramiteNumber}）的状态已更改。</p>
 
             <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
-              <p style="margin: 5px 0;"><strong>📄 文档：</strong> ${documentTitle}</p>
+              <p style="margin: 5px 0;"><strong>📄 文档：</strong> ${titleCn}</p>
               <p style="margin: 5px 0;"><strong>🔢 程序号：</strong> ${tramiteNumber}</p>
-              <p style="margin: 5px 0;"><strong>❌ 前一个状态：</strong> <span style="background: #ffe6e6; padding: 2px 6px; border-radius: 3px;">${oldStatus}</span></p>
-              <p style="margin: 5px 0;"><strong>✅ 新状态：</strong> <span style="background: #e6ffe6; padding: 2px 6px; border-radius: 3px;">${newStatus}</span></p>
-              <p style="margin: 5px 0;"><strong>👤 更改者：</strong> ${changedBy}</p>
-              <p style="margin: 5px 0;"><strong>🏢 权限：</strong> ${authority}</p>
+              <p style="margin: 5px 0;"><strong>❌ 前一个状态：</strong> <span style="background: #ffe6e6; padding: 2px 6px; border-radius: 3px;">${oldStatusCn}</span></p>
+              <p style="margin: 5px 0;"><strong>✅ 新状态：</strong> <span style="background: #e6ffe6; padding: 2px 6px; border-radius: 3px;">${newStatusCn}</span></p>
+              <p style="margin: 5px 0;"><strong>👤 更改者：</strong> ${changedByCn}</p>
+              <p style="margin: 5px 0;"><strong>🏢 权限：</strong> ${authorityCn}</p>
             </div>
           </div>
 
@@ -596,8 +648,15 @@ const getStatusChangeEmailContent = (documentTitle, tramiteNumber, oldStatus, ne
   };
 };
 
-// 🌐 Activity Added Notification Email Template (Bilingual)
-const getActivityAddedEmailContent = (documentTitle, tramiteNumber, activityDescription, dueDate, priority, addedBy) => {
+// 🌐 Activity Added Notification Email Template (Bilingual with Auto-Translation)
+const getActivityAddedEmailContent = async (documentTitle, tramiteNumber, activityDescription, dueDate, priority, addedBy) => {
+  const [titleCn, descriptionCn, priorityCn, addedByCn] = await Promise.all([
+    translateToSimplifiedChinese(documentTitle),
+    translateToSimplifiedChinese(activityDescription),
+    translateToSimplifiedChinese(priority),
+    translateToSimplifiedChinese(addedBy)
+  ]);
+
   return {
     subject: "✅ Actividad Agregada | 已添加活动 - Nueva Actividad | 新活动",
     html: `
@@ -623,14 +682,14 @@ const getActivityAddedEmailContent = (documentTitle, tramiteNumber, activityDesc
           <!-- CHINESE -->
           <div>
             <h2 style="color: #204070;">✅ 已添加活动</h2>
-            <p>已向文档"<strong>${documentTitle}</strong>"（程序：${tramiteNumber}）添加新活动。</p>
+            <p>已向文档"<strong>${titleCn}</strong>"（程序：${tramiteNumber}）添加新活动。</p>
 
             <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
-              <p style="margin: 5px 0;"><strong>📄 文档：</strong> ${documentTitle}</p>
-              <p style="margin: 5px 0;"><strong>📝 活动：</strong> ${activityDescription}</p>
+              <p style="margin: 5px 0;"><strong>📄 文档：</strong> ${titleCn}</p>
+              <p style="margin: 5px 0;"><strong>📝 活动：</strong> ${descriptionCn}</p>
               <p style="margin: 5px 0;"><strong>📅 截止日期：</strong> ${dueDate}</p>
-              <p style="margin: 5px 0;"><strong>⚡ 优先级：</strong> <span style="background: ${priority === 'High' ? '#ffcccc' : priority === 'Medium' ? '#ffffcc' : '#ccffcc'}; padding: 2px 6px; border-radius: 3px;">${priority}</span></p>
-              <p style="margin: 5px 0;"><strong>👤 由以下人员添加：</strong> ${addedBy}</p>
+              <p style="margin: 5px 0;"><strong>⚡ 优先级：</strong> <span style="background: ${priority === 'High' ? '#ffcccc' : priority === 'Medium' ? '#ffffcc' : '#ccffcc'}; padding: 2px 6px; border-radius: 3px;">${priorityCn}</span></p>
+              <p style="margin: 5px 0;"><strong>👤 由以下人员添加：</strong> ${addedByCn}</p>
             </div>
           </div>
 
@@ -644,8 +703,16 @@ const getActivityAddedEmailContent = (documentTitle, tramiteNumber, activityDesc
   };
 };
 
-// 🌐 Contestation Added Notification Email Template (Bilingual)
-const getContestationAddedEmailContent = (documentTitle, tramiteNumber, notes, contactMethod, presentationDate, registeredBy) => {
+// 🌐 Contestation Added Notification Email Template (Bilingual with Auto-Translation)
+const getContestationAddedEmailContent = async (documentTitle, tramiteNumber, notes, contactMethod, presentationDate, registeredBy) => {
+  // Traducir campos al chino simplificado (en paralelo para eficiencia)
+  const [titleCn, notesCn, methodCn, byWhoCn] = await Promise.all([
+    translateToSimplifiedChinese(documentTitle),
+    translateToSimplifiedChinese(notes),
+    translateToSimplifiedChinese(contactMethod),
+    translateToSimplifiedChinese(registeredBy)
+  ]);
+
   return {
     subject: "💬 Contestación Registrada | 已注册异议 - Nueva Contestación | 新异议",
     html: `
@@ -668,17 +735,17 @@ const getContestationAddedEmailContent = (documentTitle, tramiteNumber, notes, c
             </div>
           </div>
 
-          <!-- CHINESE -->
+          <!-- CHINESE (AUTO-TRANSLATED) -->
           <div>
             <h2 style="color: #204070;">💬 已注册异议</h2>
-            <p>已在文档"<strong>${documentTitle}</strong>"（程序：${tramiteNumber}）中注册新异议。</p>
+            <p>已在文档"<strong>${titleCn}</strong>"（程序：${tramiteNumber}）中注册新异议。</p>
 
             <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
-              <p style="margin: 5px 0;"><strong>📄 文档：</strong> ${documentTitle}</p>
-              <p style="margin: 5px 0;"><strong>📝 备注：</strong> ${notes}</p>
-              <p style="margin: 5px 0;"><strong>📞 联系方式：</strong> ${contactMethod}</p>
+              <p style="margin: 5px 0;"><strong>📄 文档：</strong> ${titleCn}</p>
+              <p style="margin: 5px 0;"><strong>📝 备注：</strong> ${notesCn}</p>
+              <p style="margin: 5px 0;"><strong>📞 联系方式：</strong> ${methodCn}</p>
               <p style="margin: 5px 0;"><strong>📅 提交日期：</strong> ${presentationDate}</p>
-              <p style="margin: 5px 0;"><strong>👤 由以下人员注册：</strong> ${registeredBy}</p>
+              <p style="margin: 5px 0;"><strong>👤 由以下人员注册：</strong> ${byWhoCn}</p>
             </div>
           </div>
 
@@ -823,6 +890,54 @@ app.post("/api/auth/logout", async (req, res) => {
     sessionCache.delete(token);
   }
   res.json({ ok: true });
+});
+
+// 🔑 Cambiar contraseña
+app.post("/api/auth/change-password", requireAuth, async (req, res) => {
+  const { email, currentPassword, newPassword } = req.body;
+  if (!email || !currentPassword || !newPassword) {
+    return res.status(400).json({ error: "Email, contraseña actual y nueva contraseña requeridos" });
+  }
+  try {
+    const [rows] = await pool.query("SELECT * FROM users WHERE email = ?", [email]);
+    if (rows.length === 0) {
+      return res.status(401).json({ error: "Usuario no encontrado" });
+    }
+    const user = rows[0];
+    const currentHash = crypto.createHash("sha256").update(user.id + currentPassword).digest("hex");
+    if (currentHash !== user.password_hash) {
+      return res.status(401).json({ error: "Contraseña actual incorrecta" });
+    }
+    const newHash = crypto.createHash("sha256").update(user.id + newPassword).digest("hex");
+    await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [newHash, user.id]);
+    res.json({ ok: true, message: "Contraseña actualizada exitosamente" });
+  } catch (error) {
+    console.error("Change password error:", error);
+    res.status(500).json({ error: "Error interno del servidor" });
+  }
+});
+
+// 📸 Actualizar avatar (como base64 data URL)
+app.post("/api/auth/update-avatar", requireAuth, async (req, res) => {
+  const { avatarDataUrl } = req.body;
+  const user_id = req.user?.user_id;
+  if (!user_id || !avatarDataUrl) {
+    return res.status(400).json({ error: "User ID y avatar requeridos" });
+  }
+  try {
+    // Asegurar que la columna avatar_url es LONGTEXT (soporta base64 grandes)
+    try {
+      await pool.query(`ALTER TABLE users MODIFY COLUMN avatar_url LONGTEXT`);
+    } catch (e) {
+      // Si ya es LONGTEXT, va a fallar, pero eso está bien
+    }
+
+    await pool.query("UPDATE users SET avatar_url = ? WHERE id = ?", [avatarDataUrl, user_id]);
+    res.json({ ok: true, avatarUrl: avatarDataUrl });
+  } catch (error) {
+    console.error("Update avatar error:", error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Descargar archivos con nombre original (desde BD, fallback a disco legacy)
@@ -1720,7 +1835,7 @@ const updateDocumentHandler = async (req, res) => {
     const oldStatus = oldDoc.status;
     const newStatus = d.status || 'Inicializado';
     if (oldStatus !== newStatus) {
-      const emailTemplate = getStatusChangeEmailContent(d.title, d.trarniteNumber, oldStatus, newStatus, req.user.name, d.authority);
+      const emailTemplate = await getStatusChangeEmailContent(d.title, d.trarniteNumber, oldStatus, newStatus, req.user.name, d.authority);
       await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, id, 'status_change');
     }
     // Check for other field changes (modification)
@@ -1875,7 +1990,7 @@ app.post("/api/activities", requireAuth, async (req, res) => {
       const recipients = await getDocumentRecipients(docId);
       const formattedDueDate = dueDate ? new Date(dueDate).toLocaleDateString('es-ES') : 'N/A';
 
-      const emailTemplate = getActivityAddedEmailContent(doc.title, doc.trarnite_number, description, formattedDueDate, priority || 'Medium', req.user.name);
+      const emailTemplate = await getActivityAddedEmailContent(doc.title, doc.trarnite_number, description, formattedDueDate, priority || 'Medium', req.user.name);
       await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, docId, 'activity_added');
     }
 
@@ -2253,7 +2368,7 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
       const doc = docRows[0];
       const recipients = await getDocumentRecipients(documentId);
       const formattedDate = new Date(date).toLocaleDateString('es-ES');
-      const emailTemplate = getContestationAddedEmailContent(doc.title, doc.trarnite_number, notes || 'N/A', contact_method || 'N/A', formattedDate, req.user.name);
+      const emailTemplate = await getContestationAddedEmailContent(doc.title, doc.trarnite_number, notes || 'N/A', contact_method || 'N/A', formattedDate, req.user.name);
       await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, documentId, 'contestation_added');
     }
   } catch (notifyErr) {
@@ -2597,73 +2712,113 @@ app.post("/api/holidays/:id/delete", requireAuth, async (req, res) => {
   }
 });
 
-// 🤖 Endpoint de análisis con IA (Gemini)
+// 🤖 Endpoint de análisis con IA (Gemini) — usando Google Generative AI SDK
 app.post("/api/analyze", requireAuth, async (req, res) => {
   const { fileData, filePath, mimeType } = req.body;
 
-  let base64Data;
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json({ error: 'GEMINI_API_KEY no configurada. Análisis de IA no disponible.' });
+  }
+
+  let fileBuffer;
   let effectiveMime = mimeType;
   if (filePath) {
+    // Cargar el archivo desde el almacén (BD, fallback disco)
     const stored = await loadStoredFile(filePath);
     if (!stored) {
       return res.status(404).json({ error: 'Archivo no encontrado para análisis' });
     }
-    base64Data = stored.buffer.toString('base64');
+    fileBuffer = stored.buffer;
     if (!effectiveMime) effectiveMime = stored.mimeType;
   } else if (fileData) {
-    base64Data = fileData;
+    // fileData es base64 string
+    fileBuffer = Buffer.from(fileData, 'base64');
   } else {
     return res.status(400).json({ error: "fileData o filePath requerido" });
   }
 
   try {
+    // Usar la SDK de Google Generative AI (con mejor manejo de errores, reintentos, etc)
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-    const response = await model.generateContent({
-      contents: [{
-        parts: [
-          {
-            inline_data: {
-              mimeType: effectiveMime || "application/pdf",
-              data: base64Data
-            }
-          },
-          {
-            text: `Analiza este documento y responde SOLO con JSON válido sin markdown. EXTRAE: trarniteNumber=número interno de trámite/expediente (ej: "Trámite No."); documentNumber=número oficial del documento emitido (ej: "Resolución No.", "Oficio No.", "Notificación No.", "Auto No.", "Providencia No.") — búscalo en encabezado, pie y cuerpo. Si solo hay un número ponlo en trarniteNumber y deja documentNumber vacío. company=empresa del documento (busca siglas o nombre completo, ej: "ECSA", "EXSA", "HCSA", "PCSA", "MMSA" u otros):\n{"authority":"","department":"","company":"","notificationDate":"YYYY-MM-DD","emissionDate":"YYYY-MM-DD","daysLimit":10,"dayType":"Días hábiles","trarniteNumber":"","documentNumber":"","title":"","summaryEs":"resumen breve en español","summaryCn":"简短摘要","activities":[""]}`
-          }
+    const prompt = `Analiza este documento y responde SOLO con JSON válido sin markdown. EXTRAE: trarniteNumber=número interno de trámite/expediente (ej: "Trámite No."); documentNumber=número oficial del documento emitido (ej: "Resolución No.", "Oficio No.", "Notificación No.", "Auto No.", "Providencia No.") — búscalo en encabezado, pie y cuerpo. Si solo hay un número ponlo en trarniteNumber y deja documentNumber vacío. company=empresa del documento (busca siglas o nombre completo, ej: "ECSA", "EXSA", "HCSA", "PCSA", "MMSA" u otros):\n{"authority":"","department":"","company":"","notificationDate":"YYYY-MM-DD","emissionDate":"YYYY-MM-DD","daysLimit":10,"dayType":"Días hábiles","trarniteNumber":"","documentNumber":"","title":"","summaryEs":"resumen breve en español","summaryCn":"简短摘要","activities":[""]}`;
+
+    const imagePart = {
+      inlineData: {
+        data: fileBuffer.toString('base64'),
+        mimeType: effectiveMime || "application/pdf"
+      }
+    };
+
+    console.log(`[analyze] Enviando ${Buffer.byteLength(fileBuffer)} bytes a Gemini (${effectiveMime})`);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000); // 60s timeout
+
+    try {
+      const result = await model.generateContent({
+        contents: [{ role: "user", parts: [imagePart, { text: prompt }] }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 8192,
+          responseMimeType: "application/json"
+        },
+        safetySettings: [
+          { category: HarmCategory.HARM_CATEGORY_UNSPECIFIED, threshold: HarmBlockThreshold.BLOCK_NONE }
         ]
-      }],
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 8192,
-        responseMimeType: "application/json"
-      },
-      safetySettings: [
-        { category: HarmCategory.HARM_CATEGORY_UNSPECIFIED, threshold: HarmBlockThreshold.BLOCK_NONE },
-        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE }
-      ]
-    });
+      });
 
-    const text = response.response?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+      clearTimeout(timeout);
+      console.log(`[analyze] generateContent() completado`);
 
-    const clean = text
-      .replace(/```json/gi, '')
-      .replace(/```/g, '')
-      .replace(/[\x00-\x1F\x7F]/g, ' ')
-      .trim();
+      const response = await result.response;
+      console.log(`[analyze] response obtenida`);
 
-    const jsonMatch = clean.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("No se encontró JSON válido en la respuesta");
+      const text = response.text() || "{}";
+      console.log(`[analyze] Respuesta recibida (${text.length} chars)`);
 
-    const parsed = JSON.parse(jsonMatch[0]);
-    res.json(parsed);
+      const clean = text
+        .replace(/```json/gi, '')
+        .replace(/```/g, '')
+        .replace(/[\x00-\x1F\x7F]/g, ' ')
+        .trim();
+
+      const jsonMatch = clean.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("No se encontró JSON válido en la respuesta");
+
+      const parsed = JSON.parse(jsonMatch[0]);
+      res.json(parsed);
+    } catch (innerError) {
+      clearTimeout(timeout);
+      throw innerError;
+    }
 
   } catch (error) {
-    console.error("[analyze] Error:", error);
-    res.status(500).json({ error: error.message });
+    // undici esconde la causa real (ENOTFOUND, ECONNREFUSED, ETIMEDOUT,
+    // certificado TLS, etc.) en error.cause — esto es lo que de verdad importa.
+    console.error("[analyze] ❌ Error:", {
+      message: error.message,
+      name: error.name,
+      code: error.code,
+      cause: error.cause ? {
+        message: error.cause.message,
+        code: error.cause.code,
+        errno: error.cause.errno,
+        syscall: error.cause.syscall,
+        hostname: error.cause.hostname,
+        address: error.cause.address
+      } : undefined
+    });
+
+    // Si es timeout o conectividad a Google, permitir continuar manualmente
+    if (error.name === 'AbortError' || error.message?.includes('fetch')) {
+      return res.status(202).json({
+        warning: "Análisis con IA no disponible. Completa manualmente los campos.",
+        error: error.message
+      });
+    }
+
+    res.status(500).json({ error: error.message || "Error al analizar el documento" });
   }
 });
 
@@ -3108,11 +3263,20 @@ app.post("/api/smtp-config", requireAuth, async (req, res) => {
 });
 
 // 🔍 Listar modelos Gemini disponibles
-// 📧 Notificación de nuevo documento
-const getNewDocumentEmailContent = (doc) => ({
-  subject: `Nuevo Trámite | 新案件 - ${doc.trarnite_number}`,
-  html: `
+// 📧 Notificación de nuevo documento (con auto-traducción al chino)
+const getNewDocumentEmailContent = async (doc) => {
+  // Traducir campos al chino simplificado (en paralelo)
+  const [titleCn, authorityCn, statusCn] = await Promise.all([
+    translateToSimplifiedChinese(doc.title),
+    translateToSimplifiedChinese(doc.authority),
+    translateToSimplifiedChinese(doc.status)
+  ]);
+
+  return {
+    subject: `Nuevo Trámite | 新案件 - ${doc.trarnite_number}`,
+    html: `
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:8px;padding:20px;">
+      <!-- SPANISH -->
       <div style="margin-bottom:30px;padding-bottom:20px;border-bottom:2px solid #e0e0e0;">
         <h2 style="color:#204070;">📄 Nuevo Trámite Registrado</h2>
         <div style="background:#f9f9f9;border-left:4px solid #204070;padding:15px;margin:15px 0;border-radius:4px;">
@@ -3128,14 +3292,16 @@ const getNewDocumentEmailContent = (doc) => ({
           Ver Documento
         </a>
       </div>
+      <!-- CHINESE (AUTO-TRANSLATED) -->
       <div>
         <h2 style="color:#204070;">📄 新案件已登记</h2>
         <div style="background:#f9f9f9;border-left:4px solid #204070;padding:15px;margin:15px 0;border-radius:4px;">
-          <p style="margin:5px 0;"><strong>📋 标题：</strong> ${doc.title}</p>
+          <p style="margin:5px 0;"><strong>📋 标题：</strong> ${titleCn}</p>
           <p style="margin:5px 0;"><strong>🔢 案件编号：</strong> ${doc.trarnite_number}</p>
-          <p style="margin:5px 0;"><strong>🏢 机构：</strong> ${doc.authority}</p>
+          <p style="margin:5px 0;"><strong>🏢 机构：</strong> ${authorityCn}</p>
           <p style="margin:5px 0;"><strong>📅 通知日期：</strong> ${doc.notification_date}</p>
           <p style="margin:5px 0;"><strong>⏰ 到期日期：</strong> ${doc.due_date}</p>
+          <p style="margin:5px 0;"><strong>📊 状态：</strong> ${statusCn}</p>
         </div>
         <a href="http://192.168.60.109/taxcontrol/#/documents/${doc.id}"
            style="background:#204070;color:white;padding:12px 24px;text-decoration:none;border-radius:4px;display:inline-block;margin-top:10px;">
@@ -3143,7 +3309,8 @@ const getNewDocumentEmailContent = (doc) => ({
         </a>
       </div>
     </div>`
-});
+  };
+};
 
 // 🧪 Prueba de configuración SMTP
 app.post("/api/smtp-config/test", requireAuth, async (req, res) => {
@@ -3226,7 +3393,7 @@ app.post("/api/notifications/new-document", requireAuth, async (req, res) => {
     );
     const transporter = await getEmailTransporter();
     const config = await getSmtpConfig();
-    const emailContent = getNewDocumentEmailContent(doc);
+    const emailContent = await getNewDocumentEmailContent(doc);
     let sent = 0;
     for (const user of users) {
       try {
@@ -3248,14 +3415,84 @@ app.post("/api/notifications/new-document", requireAuth, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// 🔑 Entregar la API Key de Gemini al frontend (solo usuarios autenticados).
+// Necesario porque el servidor (red Coolify) no tiene salida a Google, pero el
+// navegador del usuario SÍ. El análisis de IA se ejecuta en el cliente.
+// No se hornea en el bundle estático: se pide en runtime tras login.
+app.get("/api/config/ai-key", requireAuth, (req, res) => {
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json({ error: 'GEMINI_API_KEY no configurada en el servidor' });
+  }
+  res.json({ apiKey: process.env.GEMINI_API_KEY });
+});
+
+// 🔍 Listar modelos Gemini disponibles (usando Google SDK)
 app.get("/api/list-models", async (req, res) => {
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json({ error: 'GEMINI_API_KEY no configurada' });
+  }
   try {
-    const response = await genAI.listModels();
-    res.json(response.models?.map(m => m.name) || response);
+    console.log("[list-models] Pidiendo listModels() a Google...");
+    const models = await genAI.listModels();
+    console.log(`[list-models] ✅ ${models.length} modelos obtenidos`);
+    res.json({ models: models });
   } catch (error) {
-    console.error("[list-models] Error:", error);
+    console.error("[list-models] ❌ Error:", {
+      message: error.message,
+      name: error.name,
+      code: error.code
+    });
     res.status(500).json({ error: error.message });
   }
+});
+
+// 🔬 Diagnóstico de conectividad a Google — aísla en qué capa falla:
+// DNS (resolución del nombre) → TCP/TLS (conexión) → HTTP (respuesta).
+app.get("/api/diag/gemini", async (req, res) => {
+  const host = "generativelanguage.googleapis.com";
+  const result = { host, dnsV4: null, dnsV6: null, https: null };
+
+  // 1) Resolución DNS IPv4
+  try {
+    const v4 = await dns.promises.resolve4(host);
+    result.dnsV4 = { ok: true, addresses: v4 };
+  } catch (e) {
+    result.dnsV4 = { ok: false, code: e.code, message: e.message };
+  }
+
+  // 2) Resolución DNS IPv6
+  try {
+    const v6 = await dns.promises.resolve6(host);
+    result.dnsV6 = { ok: true, addresses: v6 };
+  } catch (e) {
+    result.dnsV6 = { ok: false, code: e.code, message: e.message };
+  }
+
+  // 3) Conexión HTTPS real (handshake TLS + respuesta HTTP)
+  try {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 15000);
+    const r = await fetch(`https://${host}/v1beta/models?key=invalid-test-key`, {
+      signal: controller.signal
+    });
+    clearTimeout(t);
+    // Esperamos 400/403 (key inválida) — eso significa que LLEGAMOS a Google.
+    result.https = { ok: true, status: r.status, reachable: true };
+  } catch (e) {
+    result.https = {
+      ok: false,
+      reachable: false,
+      message: e.message,
+      cause: e.cause ? {
+        code: e.cause.code,
+        errno: e.cause.errno,
+        syscall: e.cause.syscall,
+        address: e.cause.address
+      } : undefined
+    };
+  }
+
+  res.json(result);
 });
 
 // 📅 Programar notificaciones diarias de resumen
