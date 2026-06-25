@@ -3210,6 +3210,7 @@ const getNewDocumentEmailContent = (doc) => ({
   subject: `Nuevo Trámite | 新案件 - ${doc.trarnite_number}`,
   html: `
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:8px;padding:20px;">
+      <!-- SPANISH -->
       <div style="margin-bottom:30px;padding-bottom:20px;border-bottom:2px solid #e0e0e0;">
         <h2 style="color:#204070;">📄 Nuevo Trámite Registrado</h2>
         <div style="background:#f9f9f9;border-left:4px solid #204070;padding:15px;margin:15px 0;border-radius:4px;">
@@ -3225,6 +3226,7 @@ const getNewDocumentEmailContent = (doc) => ({
           Ver Documento
         </a>
       </div>
+      <!-- CHINESE -->
       <div>
         <h2 style="color:#204070;">📄 新案件已登记</h2>
         <div style="background:#f9f9f9;border-left:4px solid #204070;padding:15px;margin:15px 0;border-radius:4px;">
@@ -3233,6 +3235,7 @@ const getNewDocumentEmailContent = (doc) => ({
           <p style="margin:5px 0;"><strong>🏢 机构：</strong> ${doc.authority}</p>
           <p style="margin:5px 0;"><strong>📅 通知日期：</strong> ${doc.notification_date}</p>
           <p style="margin:5px 0;"><strong>⏰ 到期日期：</strong> ${doc.due_date}</p>
+          <p style="margin:5px 0;"><strong>📊 状态：</strong> ${doc.status}</p>
         </div>
         <a href="http://192.168.60.109/taxcontrol/#/documents/${doc.id}"
            style="background:#204070;color:white;padding:12px 24px;text-decoration:none;border-radius:4px;display:inline-block;margin-top:10px;">
