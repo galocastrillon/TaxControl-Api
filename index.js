@@ -138,7 +138,7 @@ const syncDocumentStatusFromActivities = async (docId, changedBy) => {
     try {
       const recipients = await getDocumentRecipients(docId);
       const doc = docRows[0];
-      const emailTemplate = getStatusChangeEmailContent(
+      const emailTemplate = await getStatusChangeEmailContent(
         doc.title, doc.trarnite_number, oldStatus, newStatus, changedBy, doc.authority
       );
       await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, docId, 'status_change');
@@ -481,6 +481,41 @@ const pool = mysql.createPool({
   enableKeepAlive: true
 });
 
+// 🌐 Cache de traducciones para evitar llamadas repetidas a Gemini
+const translationCache = new Map();
+
+// 🌐 Traducción automática de español a chino simplificado usando Gemini
+const translateToSimplifiedChinese = async (text) => {
+  if (!text) return text;
+
+  // Evitar traducir URLs, emails, números de trámite
+  if (text.match(/^[0-9\-\.@\/\:]+$/)) return text;
+
+  // Verificar cache
+  if (translationCache.has(text)) {
+    return translationCache.get(text);
+  }
+
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const response = await model.generateContent({
+      contents: [{
+        parts: [{
+          text: `Traduce el siguiente texto del español al chino simplificado. SOLO devuelve la traducción, sin explicaciones ni formato adicional:\n\n"${text}"`
+        }]
+      }],
+      generationConfig: { temperature: 0.1, maxOutputTokens: 500 }
+    });
+
+    const translated = response.response?.text?.().trim() || text;
+    translationCache.set(text, translated);
+    return translated;
+  } catch (error) {
+    console.warn(`[translateToSimplifiedChinese] Error traduciendo "${text}":`, error.message);
+    return text; // Fallback: devolver el texto original en español
+  }
+};
+
 // 🌐 Email Template Helper - Multi-language Support (Spanish + Simplified Chinese)
 const getWelcomeEmailContent = (name, email, password, role = "Operator") => {
   const roleDisplay = role || "Operator";
@@ -556,7 +591,15 @@ const getWelcomeEmailContent = (name, email, password, role = "Operator") => {
 };
 
 // 🌐 Status Change Notification Email Template (Bilingual)
-const getStatusChangeEmailContent = (documentTitle, tramiteNumber, oldStatus, newStatus, changedBy, authority) => {
+const getStatusChangeEmailContent = async (documentTitle, tramiteNumber, oldStatus, newStatus, changedBy, authority) => {
+  const [titleCn, oldStatusCn, newStatusCn, changedByCn, authorityCn] = await Promise.all([
+    translateToSimplifiedChinese(documentTitle),
+    translateToSimplifiedChinese(oldStatus),
+    translateToSimplifiedChinese(newStatus),
+    translateToSimplifiedChinese(changedBy),
+    translateToSimplifiedChinese(authority)
+  ]);
+
   return {
     subject: "📋 Documento Actualizado | 文档已更新 - Estado Cambió | 状态已更改",
     html: `
@@ -583,15 +626,15 @@ const getStatusChangeEmailContent = (documentTitle, tramiteNumber, oldStatus, ne
           <!-- CHINESE -->
           <div>
             <h2 style="color: #204070;">📋 文档已更新</h2>
-            <p>文档"<strong>${documentTitle}</strong>"（程序：${tramiteNumber}）的状态已更改。</p>
+            <p>文档"<strong>${titleCn}</strong>"（程序：${tramiteNumber}）的状态已更改。</p>
 
             <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
-              <p style="margin: 5px 0;"><strong>📄 文档：</strong> ${documentTitle}</p>
+              <p style="margin: 5px 0;"><strong>📄 文档：</strong> ${titleCn}</p>
               <p style="margin: 5px 0;"><strong>🔢 程序号：</strong> ${tramiteNumber}</p>
-              <p style="margin: 5px 0;"><strong>❌ 前一个状态：</strong> <span style="background: #ffe6e6; padding: 2px 6px; border-radius: 3px;">${oldStatus}</span></p>
-              <p style="margin: 5px 0;"><strong>✅ 新状态：</strong> <span style="background: #e6ffe6; padding: 2px 6px; border-radius: 3px;">${newStatus}</span></p>
-              <p style="margin: 5px 0;"><strong>👤 更改者：</strong> ${changedBy}</p>
-              <p style="margin: 5px 0;"><strong>🏢 权限：</strong> ${authority}</p>
+              <p style="margin: 5px 0;"><strong>❌ 前一个状态：</strong> <span style="background: #ffe6e6; padding: 2px 6px; border-radius: 3px;">${oldStatusCn}</span></p>
+              <p style="margin: 5px 0;"><strong>✅ 新状态：</strong> <span style="background: #e6ffe6; padding: 2px 6px; border-radius: 3px;">${newStatusCn}</span></p>
+              <p style="margin: 5px 0;"><strong>👤 更改者：</strong> ${changedByCn}</p>
+              <p style="margin: 5px 0;"><strong>🏢 权限：</strong> ${authorityCn}</p>
             </div>
           </div>
 
@@ -605,8 +648,15 @@ const getStatusChangeEmailContent = (documentTitle, tramiteNumber, oldStatus, ne
   };
 };
 
-// 🌐 Activity Added Notification Email Template (Bilingual)
-const getActivityAddedEmailContent = (documentTitle, tramiteNumber, activityDescription, dueDate, priority, addedBy) => {
+// 🌐 Activity Added Notification Email Template (Bilingual with Auto-Translation)
+const getActivityAddedEmailContent = async (documentTitle, tramiteNumber, activityDescription, dueDate, priority, addedBy) => {
+  const [titleCn, descriptionCn, priorityCn, addedByCn] = await Promise.all([
+    translateToSimplifiedChinese(documentTitle),
+    translateToSimplifiedChinese(activityDescription),
+    translateToSimplifiedChinese(priority),
+    translateToSimplifiedChinese(addedBy)
+  ]);
+
   return {
     subject: "✅ Actividad Agregada | 已添加活动 - Nueva Actividad | 新活动",
     html: `
@@ -632,14 +682,14 @@ const getActivityAddedEmailContent = (documentTitle, tramiteNumber, activityDesc
           <!-- CHINESE -->
           <div>
             <h2 style="color: #204070;">✅ 已添加活动</h2>
-            <p>已向文档"<strong>${documentTitle}</strong>"（程序：${tramiteNumber}）添加新活动。</p>
+            <p>已向文档"<strong>${titleCn}</strong>"（程序：${tramiteNumber}）添加新活动。</p>
 
             <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
-              <p style="margin: 5px 0;"><strong>📄 文档：</strong> ${documentTitle}</p>
-              <p style="margin: 5px 0;"><strong>📝 活动：</strong> ${activityDescription}</p>
+              <p style="margin: 5px 0;"><strong>📄 文档：</strong> ${titleCn}</p>
+              <p style="margin: 5px 0;"><strong>📝 活动：</strong> ${descriptionCn}</p>
               <p style="margin: 5px 0;"><strong>📅 截止日期：</strong> ${dueDate}</p>
-              <p style="margin: 5px 0;"><strong>⚡ 优先级：</strong> <span style="background: ${priority === 'High' ? '#ffcccc' : priority === 'Medium' ? '#ffffcc' : '#ccffcc'}; padding: 2px 6px; border-radius: 3px;">${priority}</span></p>
-              <p style="margin: 5px 0;"><strong>👤 由以下人员添加：</strong> ${addedBy}</p>
+              <p style="margin: 5px 0;"><strong>⚡ 优先级：</strong> <span style="background: ${priority === 'High' ? '#ffcccc' : priority === 'Medium' ? '#ffffcc' : '#ccffcc'}; padding: 2px 6px; border-radius: 3px;">${priorityCn}</span></p>
+              <p style="margin: 5px 0;"><strong>👤 由以下人员添加：</strong> ${addedByCn}</p>
             </div>
           </div>
 
@@ -653,8 +703,16 @@ const getActivityAddedEmailContent = (documentTitle, tramiteNumber, activityDesc
   };
 };
 
-// 🌐 Contestation Added Notification Email Template (Bilingual)
-const getContestationAddedEmailContent = (documentTitle, tramiteNumber, notes, contactMethod, presentationDate, registeredBy) => {
+// 🌐 Contestation Added Notification Email Template (Bilingual with Auto-Translation)
+const getContestationAddedEmailContent = async (documentTitle, tramiteNumber, notes, contactMethod, presentationDate, registeredBy) => {
+  // Traducir campos al chino simplificado (en paralelo para eficiencia)
+  const [titleCn, notesCn, methodCn, byWhoCn] = await Promise.all([
+    translateToSimplifiedChinese(documentTitle),
+    translateToSimplifiedChinese(notes),
+    translateToSimplifiedChinese(contactMethod),
+    translateToSimplifiedChinese(registeredBy)
+  ]);
+
   return {
     subject: "💬 Contestación Registrada | 已注册异议 - Nueva Contestación | 新异议",
     html: `
@@ -677,17 +735,17 @@ const getContestationAddedEmailContent = (documentTitle, tramiteNumber, notes, c
             </div>
           </div>
 
-          <!-- CHINESE -->
+          <!-- CHINESE (AUTO-TRANSLATED) -->
           <div>
             <h2 style="color: #204070;">💬 已注册异议</h2>
-            <p>已在文档"<strong>${documentTitle}</strong>"（程序：${tramiteNumber}）中注册新异议。</p>
+            <p>已在文档"<strong>${titleCn}</strong>"（程序：${tramiteNumber}）中注册新异议。</p>
 
             <div style="background-color: #f9f9f9; border-left: 4px solid #204070; padding: 15px; margin: 20px 0; border-radius: 4px;">
-              <p style="margin: 5px 0;"><strong>📄 文档：</strong> ${documentTitle}</p>
-              <p style="margin: 5px 0;"><strong>📝 备注：</strong> ${notes}</p>
-              <p style="margin: 5px 0;"><strong>📞 联系方式：</strong> ${contactMethod}</p>
+              <p style="margin: 5px 0;"><strong>📄 文档：</strong> ${titleCn}</p>
+              <p style="margin: 5px 0;"><strong>📝 备注：</strong> ${notesCn}</p>
+              <p style="margin: 5px 0;"><strong>📞 联系方式：</strong> ${methodCn}</p>
               <p style="margin: 5px 0;"><strong>📅 提交日期：</strong> ${presentationDate}</p>
-              <p style="margin: 5px 0;"><strong>👤 由以下人员注册：</strong> ${registeredBy}</p>
+              <p style="margin: 5px 0;"><strong>👤 由以下人员注册：</strong> ${byWhoCn}</p>
             </div>
           </div>
 
@@ -1777,7 +1835,7 @@ const updateDocumentHandler = async (req, res) => {
     const oldStatus = oldDoc.status;
     const newStatus = d.status || 'Inicializado';
     if (oldStatus !== newStatus) {
-      const emailTemplate = getStatusChangeEmailContent(d.title, d.trarniteNumber, oldStatus, newStatus, req.user.name, d.authority);
+      const emailTemplate = await getStatusChangeEmailContent(d.title, d.trarniteNumber, oldStatus, newStatus, req.user.name, d.authority);
       await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, id, 'status_change');
     }
     // Check for other field changes (modification)
@@ -1932,7 +1990,7 @@ app.post("/api/activities", requireAuth, async (req, res) => {
       const recipients = await getDocumentRecipients(docId);
       const formattedDueDate = dueDate ? new Date(dueDate).toLocaleDateString('es-ES') : 'N/A';
 
-      const emailTemplate = getActivityAddedEmailContent(doc.title, doc.trarnite_number, description, formattedDueDate, priority || 'Medium', req.user.name);
+      const emailTemplate = await getActivityAddedEmailContent(doc.title, doc.trarnite_number, description, formattedDueDate, priority || 'Medium', req.user.name);
       await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, docId, 'activity_added');
     }
 
@@ -2310,7 +2368,7 @@ app.post("/api/documents/:id/contestations", requireAuth, async (req, res) => {
       const doc = docRows[0];
       const recipients = await getDocumentRecipients(documentId);
       const formattedDate = new Date(date).toLocaleDateString('es-ES');
-      const emailTemplate = getContestationAddedEmailContent(doc.title, doc.trarnite_number, notes || 'N/A', contact_method || 'N/A', formattedDate, req.user.name);
+      const emailTemplate = await getContestationAddedEmailContent(doc.title, doc.trarnite_number, notes || 'N/A', contact_method || 'N/A', formattedDate, req.user.name);
       await sendNotificationEmail(recipients, emailTemplate.subject, emailTemplate.html, documentId, 'contestation_added');
     }
   } catch (notifyErr) {
@@ -3205,10 +3263,18 @@ app.post("/api/smtp-config", requireAuth, async (req, res) => {
 });
 
 // 🔍 Listar modelos Gemini disponibles
-// 📧 Notificación de nuevo documento
-const getNewDocumentEmailContent = (doc) => ({
-  subject: `Nuevo Trámite | 新案件 - ${doc.trarnite_number}`,
-  html: `
+// 📧 Notificación de nuevo documento (con auto-traducción al chino)
+const getNewDocumentEmailContent = async (doc) => {
+  // Traducir campos al chino simplificado (en paralelo)
+  const [titleCn, authorityCn, statusCn] = await Promise.all([
+    translateToSimplifiedChinese(doc.title),
+    translateToSimplifiedChinese(doc.authority),
+    translateToSimplifiedChinese(doc.status)
+  ]);
+
+  return {
+    subject: `Nuevo Trámite | 新案件 - ${doc.trarnite_number}`,
+    html: `
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff;border-radius:8px;padding:20px;">
       <!-- SPANISH -->
       <div style="margin-bottom:30px;padding-bottom:20px;border-bottom:2px solid #e0e0e0;">
@@ -3226,16 +3292,16 @@ const getNewDocumentEmailContent = (doc) => ({
           Ver Documento
         </a>
       </div>
-      <!-- CHINESE -->
+      <!-- CHINESE (AUTO-TRANSLATED) -->
       <div>
         <h2 style="color:#204070;">📄 新案件已登记</h2>
         <div style="background:#f9f9f9;border-left:4px solid #204070;padding:15px;margin:15px 0;border-radius:4px;">
-          <p style="margin:5px 0;"><strong>📋 标题：</strong> ${doc.title}</p>
+          <p style="margin:5px 0;"><strong>📋 标题：</strong> ${titleCn}</p>
           <p style="margin:5px 0;"><strong>🔢 案件编号：</strong> ${doc.trarnite_number}</p>
-          <p style="margin:5px 0;"><strong>🏢 机构：</strong> ${doc.authority}</p>
+          <p style="margin:5px 0;"><strong>🏢 机构：</strong> ${authorityCn}</p>
           <p style="margin:5px 0;"><strong>📅 通知日期：</strong> ${doc.notification_date}</p>
           <p style="margin:5px 0;"><strong>⏰ 到期日期：</strong> ${doc.due_date}</p>
-          <p style="margin:5px 0;"><strong>📊 状态：</strong> ${doc.status}</p>
+          <p style="margin:5px 0;"><strong>📊 状态：</strong> ${statusCn}</p>
         </div>
         <a href="http://192.168.60.109/taxcontrol/#/documents/${doc.id}"
            style="background:#204070;color:white;padding:12px 24px;text-decoration:none;border-radius:4px;display:inline-block;margin-top:10px;">
@@ -3243,7 +3309,8 @@ const getNewDocumentEmailContent = (doc) => ({
         </a>
       </div>
     </div>`
-});
+  };
+};
 
 // 🧪 Prueba de configuración SMTP
 app.post("/api/smtp-config/test", requireAuth, async (req, res) => {
@@ -3326,7 +3393,7 @@ app.post("/api/notifications/new-document", requireAuth, async (req, res) => {
     );
     const transporter = await getEmailTransporter();
     const config = await getSmtpConfig();
-    const emailContent = getNewDocumentEmailContent(doc);
+    const emailContent = await getNewDocumentEmailContent(doc);
     let sent = 0;
     for (const user of users) {
       try {
