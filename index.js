@@ -2880,30 +2880,26 @@ const getEmailTransporter = async () => {
   try {
     const config = await getSmtpConfig();
 
-    if (!config.password || !config.host || !config.user || !config.from_email) {
+    if (!config.host || !config.from_email) {
       const missing = [];
       if (!config.host) missing.push("SMTP Host");
-      if (!config.user) missing.push("SMTP User");
-      if (!config.password) missing.push("SMTP Password");
       if (!config.from_email) missing.push("From Email");
       throw new Error(`SMTP not fully configured. Missing: ${missing.join(", ")}. Please configure it in the Admin panel (Settings > SMTP Configuration).`);
     }
 
-    const port = config.port || 465;
+    const port = config.port || 25;
     const isSecure = config.use_ssl === true || config.use_ssl === 1;
+    const hasAuth = config.user && config.password;
 
     return nodemailer.createTransport({
       host: config.host,
       port: port,
       secure: isSecure,
-      ...(!isSecure && { requireTLS: true }),
+      ...(!isSecure && port !== 25 && { requireTLS: true }),
       connectionTimeout: 10000,
       greetingTimeout: 10000,
       socketTimeout: 15000,
-      auth: {
-        user: config.user,
-        pass: config.password
-      },
+      ...(hasAuth && { auth: { user: config.user, pass: config.password } }),
       tls: {
         rejectUnauthorized: false,
         minVersion: "TLSv1"
