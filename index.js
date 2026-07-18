@@ -2895,11 +2895,11 @@ const getEmailTransporter = async () => {
     return nodemailer.createTransport({
       host: config.host,
       port: port,
-      secure: false,       // NO SSL implícito — el servidor OWA usa STARTTLS
-      requireTLS: true,    // Exigir STARTTLS después de conectar
-      connectionTimeout: 5000,
-      greetingTimeout: 5000,
-      socketTimeout: 10000,
+      secure: isSecure,
+      ...(!isSecure && { requireTLS: true }),
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000,
       auth: {
         user: config.user,
         pass: config.password
