@@ -3229,18 +3229,15 @@ app.post("/api/smtp-config", requireAuth, async (req, res) => {
   try {
     const { host, port, user, password, from_email, from_name, use_ssl } = req.body;
 
-    if (!host || !port || !user || !from_email) {
-      return res.status(400).json({ error: "Faltan campos requeridos: host, port, user, from_email" });
+    if (!host || !port || !from_email) {
+      return res.status(400).json({ error: "Faltan campos requeridos: host, port, from_email" });
     }
 
     // Si se omite la contraseña, conservar la que ya existe en BD
     const [existing] = await pool.query('SELECT password FROM smtp_config WHERE id = 1');
     const existingPassword = existing.length > 0 ? existing[0].password : null;
-    const finalPassword = password || existingPassword;
-
-    if (!finalPassword) {
-      return res.status(400).json({ error: "La contraseña SMTP es requerida (primera configuración)" });
-    }
+    const finalPassword = password || existingPassword || '';
+    const finalUser = user || '';
 
     const query = `
       INSERT INTO smtp_config (id, host, port, user, password, from_email, from_name, use_ssl)
@@ -3250,7 +3247,7 @@ app.post("/api/smtp-config", requireAuth, async (req, res) => {
         password=VALUES(password), from_email=VALUES(from_email),
         from_name=VALUES(from_name), use_ssl=VALUES(use_ssl), updated_at=NOW()
     `;
-    await pool.query(query, [host, port, user, finalPassword, from_email, from_name, use_ssl ? 1 : 0]);
+    await pool.query(query, [host, port, finalUser, finalPassword, from_email, from_name, use_ssl ? 1 : 0]);
     res.json({ ok: true, message: "SMTP configuration saved successfully" });
   } catch (error) {
     console.error("SMTP config save error:", error);
